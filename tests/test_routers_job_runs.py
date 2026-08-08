@@ -24,7 +24,7 @@ from app.models.enums import JobRunStatus, ProtocolType, UserRole
 from app.models.job_run import JobRun
 from app.models.server import Server
 from app.models.user import User
-from conftest import build_backup_job, build_disk, build_job_run, build_server, mint_token
+from tests.conftest import build_backup_job, build_disk, build_job_run, build_server, mint_token
 
 
 async def _enabled_job(session):

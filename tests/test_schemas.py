@@ -26,7 +26,7 @@ from app.schemas.restore_operation import RestoreOperationCreate, RestoreOperati
 from app.schemas.restore_operation import is_valid_transition as restore_is_valid_transition
 from app.schemas.server import ServerCreate, ServerRead
 from app.schemas.sql_instance import SqlInstanceRead
-from conftest import build_server, build_sql_instance
+from tests.conftest import build_server, build_sql_instance
 
 
 # --------------------------------------------------------------------------

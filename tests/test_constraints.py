@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.models.enums import AlertSeverity, AlertStatus, AlertType, JobRunStatus, RestoreStatus
-from conftest import (
+from tests.conftest import (
     build_alert,
     build_backup_job,
     build_backup_record,

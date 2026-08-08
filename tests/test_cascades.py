@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Alert, BackupJob, BackupRecord, Disk, JobRun, RestoreOperation, Server, SqlInstance
-from conftest import (
+from tests.conftest import (
     build_alert,
     build_backup_job,
     build_backup_record,

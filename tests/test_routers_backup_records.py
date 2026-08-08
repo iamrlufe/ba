@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.models.enums import JobRunStatus
-from conftest import build_backup_job, build_disk, build_job_run, build_server
+from tests.conftest import build_backup_job, build_disk, build_job_run, build_server
 
 
 async def _job(session):
@@ -135,3 +135,41 @@ async def test_upsert_backup_record_negative_size_is_422(admin_client, session):
         },
     )
     assert resp.status_code == 422
+
+
+# --------------------------------------------------------------------------
+# GET /api/backup-records/{id}
+# --------------------------------------------------------------------------
+
+
+async def test_get_backup_record_happy_path(admin_client, session):
+    job = await _job(session)
+    create_resp = await admin_client.post(
+        "/api/backup-records",
+        json={
+            "backup_job_id": job.id,
+            "file_name": "backup8.bak",
+            "remote_path": "/remote/backup8.bak",
+            "file_size_bytes": 4096,
+        },
+    )
+    assert create_resp.status_code == 200
+    record_id = create_resp.json()["id"]
+
+    resp = await admin_client.get(f"/api/backup-records/{record_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == record_id
+    assert body["file_name"] == "backup8.bak"
+    assert body["backup_job_id"] == job.id
+
+
+async def test_get_backup_record_404(admin_client):
+    resp = await admin_client.get("/api/backup-records/999999")
+    assert resp.status_code == 404
+
+
+async def test_get_backup_record_requires_auth(client, session):
+    job = await _job(session)
+    resp = await client.get(f"/api/backup-records/{job.id}")
+    assert resp.status_code == 401

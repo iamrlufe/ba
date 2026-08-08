@@ -4,7 +4,7 @@ from __future__ import annotations
 import app.routers.auth as auth_router
 from app.core.auth import hash_password
 from app.models.enums import UserRole
-from conftest import build_user
+from tests.conftest import build_user
 
 
 async def test_login_happy_path(client, session):
@@ -82,7 +82,7 @@ async def test_me_rejects_invalid_token(client):
 
 
 async def test_me_rejects_inactive_user_token(client, session):
-    from conftest import mint_token
+    from tests.conftest import mint_token
 
     user = build_user(username="eve", role=UserRole.OPERATOR, is_active=False)
     session.add(user)
@@ -176,3 +176,101 @@ async def test_login_correct_credentials_token_accepted_by_me(client, session):
     me_resp = await client.get("/api/auth/me")
     assert me_resp.status_code == 200
     assert me_resp.json()["username"] == "grace"
+
+
+# --------------------------------------------------------------------------
+# POST /api/auth/telegram-link
+# --------------------------------------------------------------------------
+
+
+async def test_telegram_link_happy_path(client, session):
+    from app.core.auth import decode_access_token
+
+    user = build_user(username="tg-alice", hashed_password=hash_password("correct-horse-battery"))
+    session.add(user)
+    await session.commit()
+
+    resp = await client.post(
+        "/api/auth/telegram-link",
+        json={
+            "username": "tg-alice",
+            "password": "correct-horse-battery",
+            "telegram_user_id": 555111,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["username"] == "tg-alice"
+    assert body["role"] == UserRole.OPERATOR.value
+    assert body["token_type"] == "bearer"
+    assert body["expires_in"] > 0
+    assert isinstance(body["bot_access_token"], str) and body["bot_access_token"]
+
+    payload = decode_access_token(body["bot_access_token"])
+    assert payload["username"] == "tg-alice"
+    assert payload["scope"] == "telegram_bot"
+
+    await session.refresh(user)
+    assert user.telegram_user_id == 555111
+    # Persisted encrypted, never the raw JWT itself.
+    assert user.telegram_bot_token_encrypted is not None
+    assert user.telegram_bot_token_encrypted != body["bot_access_token"]
+
+
+async def test_telegram_link_wrong_password_is_401_generic(client, session):
+    user = build_user(username="tg-bob", hashed_password=hash_password("realpassword"))
+    session.add(user)
+    await session.commit()
+
+    resp = await client.post(
+        "/api/auth/telegram-link",
+        json={"username": "tg-bob", "password": "wrongpassword", "telegram_user_id": 2},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid username or password"
+
+
+async def test_telegram_link_unknown_username_is_401_generic(client):
+    resp = await client.post(
+        "/api/auth/telegram-link",
+        json={"username": "nobody-tg", "password": "whatever", "telegram_user_id": 3},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid username or password"
+
+
+async def test_telegram_link_inactive_user_is_401_generic(client, session):
+    user = build_user(
+        username="tg-carol", hashed_password=hash_password("realpassword"), is_active=False
+    )
+    session.add(user)
+    await session.commit()
+
+    resp = await client.post(
+        "/api/auth/telegram-link",
+        json={"username": "tg-carol", "password": "realpassword", "telegram_user_id": 4},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid username or password"
+
+
+async def test_telegram_link_already_linked_to_different_user_is_409(client, session):
+    user1 = build_user(username="tg-dave", hashed_password=hash_password("pw1-secret"))
+    user2 = build_user(username="tg-erin", hashed_password=hash_password("pw2-secret"))
+    session.add_all([user1, user2])
+    await session.commit()
+
+    first = await client.post(
+        "/api/auth/telegram-link",
+        json={"username": "tg-dave", "password": "pw1-secret", "telegram_user_id": 999888},
+    )
+    assert first.status_code == 200
+
+    second = await client.post(
+        "/api/auth/telegram-link",
+        json={"username": "tg-erin", "password": "pw2-secret", "telegram_user_id": 999888},
+    )
+    assert second.status_code == 409
+
+    await session.refresh(user2)
+    assert user2.telegram_user_id is None

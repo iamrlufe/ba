@@ -72,6 +72,23 @@ class Settings(BaseSettings):
     DAILY_SUMMARY_HOUR_UTC: int = 8
     DAILY_SUMMARY_MINUTE_UTC: int = 0
 
+    # Lifetime (minutes) of a bot-scoped JWT minted by
+    # POST /api/auth/telegram-link (app/core/auth.py::create_bot_access_token).
+    # Deliberately long-lived (default 30 days) by design, since the
+    # Telegram bot is a separate always-on process, not a short-lived
+    # interactive session. Revocation: only User.is_active=False reliably
+    # blocks a bot-scoped token (get_current_user re-checks is_active live
+    # on every request, for EVERY token that user has ever been issued).
+    # Re-running /link mints a fresh token and overwrites
+    # User.telegram_bot_token_encrypted, but does NOT invalidate the
+    # previous token -- nothing compares a presented JWT against that
+    # stored value, so an old token remains valid until its own natural
+    # expiry even after re-linking. This is the existing no-revocation-list
+    # JWT scheme (see app/core/auth.py module docstring) applied as-is to
+    # the long-lived bot token; "re-link to revoke" is not a real
+    # mitigation and must not be told to users as one.
+    BOT_TOKEN_EXPIRE_MINUTES: int = 43200  # 30 days
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from app.core.security import decrypt_secret
 from app.models.enums import JobRunStatus, RequestChannel, RestoreMode, RestoreStatus
-from conftest import (
+from tests.conftest import (
     build_backup_job,
     build_backup_record,
     build_disk,

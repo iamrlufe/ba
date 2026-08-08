@@ -1,7 +1,7 @@
 """HTTP-layer tests for /api/disks (app/routers/disks.py)."""
 from __future__ import annotations
 
-from conftest import build_backup_job, build_disk, build_server
+from tests.conftest import build_backup_job, build_disk, build_server
 
 
 async def _server(session):

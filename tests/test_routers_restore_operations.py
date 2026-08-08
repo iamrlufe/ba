@@ -17,7 +17,7 @@ Also covers the auth-module behavior:
 from __future__ import annotations
 
 from app.models.enums import RestoreMode, RestoreStatus
-from conftest import build_backup_job, build_backup_record, build_disk, build_server, build_sql_instance
+from tests.conftest import build_backup_job, build_backup_record, build_disk, build_server, build_sql_instance
 
 
 async def _record_and_instance(session):
@@ -130,7 +130,7 @@ async def test_get_restore_operation_404(admin_client):
 
 async def test_get_restore_operation_log(admin_client, session):
     record, instance = await _record_and_instance(session)
-    from conftest import build_restore_operation
+    from tests.conftest import build_restore_operation
 
     restore = build_restore_operation(record.id, instance.id, log="line1\nline2")
     session.add(restore)
@@ -142,7 +142,7 @@ async def test_get_restore_operation_log(admin_client, session):
 
 
 async def test_patch_restore_operation_running_to_cancelled_is_409(admin_client, session):
-    from conftest import build_restore_operation
+    from tests.conftest import build_restore_operation
 
     record, instance = await _record_and_instance(session)
     restore = build_restore_operation(record.id, instance.id, status=RestoreStatus.RUNNING)
@@ -154,7 +154,7 @@ async def test_patch_restore_operation_running_to_cancelled_is_409(admin_client,
 
 
 async def test_patch_restore_operation_pending_to_cancelled_is_ok(admin_client, session):
-    from conftest import build_restore_operation
+    from tests.conftest import build_restore_operation
 
     record, instance = await _record_and_instance(session)
     restore = build_restore_operation(record.id, instance.id, status=RestoreStatus.PENDING)
@@ -184,7 +184,7 @@ async def test_patch_restore_operation_double_terminal_transition_is_409_and_sta
     terminal status (DONE), then PATCH it again -- the second attempt must
     409 and must NOT alter the already-terminal row's status/completed_at
     from what the first (successful) PATCH set."""
-    from conftest import build_restore_operation
+    from tests.conftest import build_restore_operation
 
     record, instance = await _record_and_instance(session)
     restore = build_restore_operation(record.id, instance.id, status=RestoreStatus.RUNNING)
@@ -279,7 +279,7 @@ async def test_create_restore_operation_requires_auth(client, session):
 async def test_operator_cannot_patch_restore_operation_admin_only(operator_client, session):
     """The PATCH endpoint is admin-only outright -- there is no secondary
     path for an operator to escalate a restore's mode after creation."""
-    from conftest import build_restore_operation
+    from tests.conftest import build_restore_operation
 
     record, instance = await _record_and_instance(session)
     restore = build_restore_operation(record.id, instance.id, status=RestoreStatus.PENDING)

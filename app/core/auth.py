@@ -47,6 +47,30 @@ def create_access_token(*, user_id: int, username: str, role: UserRole) -> str:
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
+def create_bot_access_token(*, user_id: int, username: str, role: UserRole) -> str:
+    """Mint a long-lived JWT for the Telegram bot process (see
+    POST /api/auth/telegram-link). Deliberately a separate function from
+    create_access_token (not a shared function with an optional
+    expires_delta param) so the normal login path stays structurally
+    incapable of accidentally issuing a long-lived token.
+
+    decode_access_token/get_current_user need ZERO changes -- a
+    bot-scoped JWT authenticates exactly like a normal one. The "scope"
+    claim is included for forward-compatible metadata only; it is not
+    enforced or read anywhere in this pass.
+    """
+    now = datetime.now(UTC)
+    payload = {
+        "sub": str(user_id),
+        "username": username,
+        "role": role.value,
+        "scope": "telegram_bot",
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.BOT_TOKEN_EXPIRE_MINUTES),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
 def decode_access_token(token: str) -> dict:
     """Raises jwt.PyJWTError (or subclasses) on any invalid/expired token."""
     return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])

@@ -7,7 +7,7 @@ disk's server_id doesn't match the payload's server_id.
 from __future__ import annotations
 
 from app.models.enums import JobRunStatus
-from conftest import build_backup_job, build_disk, build_job_run, build_server, build_sql_instance
+from tests.conftest import build_backup_job, build_disk, build_job_run, build_server, build_sql_instance
 
 
 def _job_payload(server_id: int, disk_id: int, **overrides) -> dict:

@@ -92,3 +92,24 @@ async def resolve_alert(
     await session.commit()
     await session.refresh(alert)
     return alert
+
+
+@router.post(
+    "/{alert_id}/mark-telegram-delivered",
+    response_model=AlertRead,
+    dependencies=[Depends(get_current_user)],
+)
+async def mark_telegram_delivered(alert_id: int, session: AsyncSession = Depends(get_db)) -> Alert:
+    """Record that this alert was pushed to Telegram (see bot/poller.py).
+
+    Any authenticated role may call this (not privileged) -- it is purely
+    bookkeeping, not part of the raise/resolve lifecycle, so it does NOT go
+    through app.routers._alerts helpers. Idempotent: calling again on an
+    already-delivered alert is a no-op success. No status restriction.
+    """
+    alert = await get_or_404(session, Alert, alert_id)
+    if alert.delivered_telegram_at is None:
+        alert.delivered_telegram_at = datetime.now(UTC)
+        await session.commit()
+        await session.refresh(alert)
+    return alert

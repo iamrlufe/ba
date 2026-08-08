@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.enums import UserRole
 from app.schemas.user import UserRead
 
 
@@ -20,3 +21,21 @@ class LoginResponse(BaseModel):
 
 class MeResponse(UserRead):
     """Distinct name for OpenAPI docs on GET /api/auth/me; same shape as UserRead."""
+
+
+class TelegramLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1, max_length=255)
+    telegram_user_id: int = Field(gt=0)
+
+
+class TelegramLinkResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    bot_access_token: str
+    token_type: str = "bearer"
+    expires_in: int  # seconds
+    username: str
+    role: UserRole

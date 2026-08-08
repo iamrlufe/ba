@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.models.enums import AlertSeverity, AlertStatus
-from conftest import build_alert
+from tests.conftest import build_alert
 
 
 async def test_list_alerts_filters_by_status_and_severity(admin_client, session):
@@ -128,3 +128,60 @@ async def test_resolve_alert_forbidden_for_operator(operator_client, session):
 async def test_resolve_alert_404(admin_client):
     resp = await admin_client.post("/api/alerts/999999/resolve", json={})
     assert resp.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# POST /api/alerts/{id}/mark-telegram-delivered
+# --------------------------------------------------------------------------
+
+
+async def test_mark_telegram_delivered_sets_timestamp_on_first_call(admin_client, session):
+    alert = build_alert()
+    session.add(alert)
+    await session.commit()
+    assert alert.delivered_telegram_at is None
+
+    resp = await admin_client.post(f"/api/alerts/{alert.id}/mark-telegram-delivered", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["delivered_telegram_at"] is not None
+
+
+async def test_mark_telegram_delivered_is_idempotent_timestamp_unchanged(admin_client, session):
+    alert = build_alert()
+    session.add(alert)
+    await session.commit()
+
+    first = await admin_client.post(f"/api/alerts/{alert.id}/mark-telegram-delivered", json={})
+    assert first.status_code == 200
+    first_ts = first.json()["delivered_telegram_at"]
+    assert first_ts is not None
+
+    second = await admin_client.post(f"/api/alerts/{alert.id}/mark-telegram-delivered", json={})
+    assert second.status_code == 200
+    second_ts = second.json()["delivered_telegram_at"]
+    # No-op on an already-delivered alert -- the timestamp must not move.
+    assert second_ts == first_ts
+
+
+async def test_mark_telegram_delivered_404(admin_client):
+    resp = await admin_client.post("/api/alerts/999999/mark-telegram-delivered", json={})
+    assert resp.status_code == 404
+
+
+async def test_mark_telegram_delivered_allows_any_authenticated_role(operator_client, session):
+    alert = build_alert()
+    session.add(alert)
+    await session.commit()
+
+    resp = await operator_client.post(f"/api/alerts/{alert.id}/mark-telegram-delivered", json={})
+    assert resp.status_code == 200
+
+
+async def test_mark_telegram_delivered_requires_auth(client, session):
+    alert = build_alert()
+    session.add(alert)
+    await session.commit()
+
+    resp = await client.post(f"/api/alerts/{alert.id}/mark-telegram-delivered", json={})
+    assert resp.status_code == 401

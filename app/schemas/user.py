@@ -27,6 +27,9 @@ class UserRead(BaseModel):
     username: str
     role: UserRole
     is_active: bool
+    telegram_user_id: int | None
     created_at: datetime
     updated_at: datetime
     # hashed_password intentionally excluded
+    # telegram_bot_token_encrypted intentionally excluded -- encrypted secrets
+    # are never echoed back in a response schema (see app.models.user.User).

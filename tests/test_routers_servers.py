@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from app.core.security import decrypt_secret
 from app.models.enums import ProtocolType
-from conftest import build_backup_job, build_disk, build_server
+from tests.conftest import build_backup_job, build_disk, build_server
 
 
 async def test_create_server_happy_path_sftp(admin_client):

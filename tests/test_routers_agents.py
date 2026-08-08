@@ -6,7 +6,7 @@ Note: there is no ORM entity `Agent` -- `server_id` here is literally
 from __future__ import annotations
 
 from app.models.enums import AlertType, ServerStatus
-from conftest import build_disk, build_server
+from tests.conftest import build_disk, build_server
 
 
 async def test_heartbeat_missing_server_is_404(admin_client):

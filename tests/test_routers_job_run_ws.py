@@ -31,7 +31,7 @@ from app.core.db import get_db
 from app.core.ws_manager import JobRunConnectionManager, manager
 from app.main import app as fastapi_app
 from app.models.enums import JobRunStatus, UserRole
-from conftest import build_backup_job, build_disk, build_job_run, build_server, build_user, mint_token
+from tests.conftest import build_backup_job, build_disk, build_job_run, build_server, build_user, mint_token
 
 
 async def _enabled_job(session):

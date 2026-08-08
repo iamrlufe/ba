@@ -29,7 +29,7 @@ from app.models.enums import AlertStatus, AlertType, JobRunStatus, ServerStatus,
 from app.models.job_run import JobRun
 from app.models.server import Server
 from app.workers.alert_worker import check_agent_offline, check_job_timeouts, check_missed_runs
-from conftest import (
+from tests.conftest import (
     build_backup_job,
     build_disk,
     build_job_run,

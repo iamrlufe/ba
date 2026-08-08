@@ -23,7 +23,7 @@ it is intentionally not duplicated here.
 from __future__ import annotations
 
 from app.core.config import settings
-from conftest import (
+from tests.conftest import (
     build_alert,
     build_backup_job,
     build_backup_record,

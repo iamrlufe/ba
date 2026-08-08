@@ -3,7 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import require_admin_or_agent_key
+from app.core.auth import get_current_user, require_admin_or_agent_key
 from app.core.db import get_db
 from app.models.backup_job import BackupJob
 from app.models.backup_record import BackupRecord
@@ -64,3 +64,10 @@ async def upsert_backup_record(
     await session.commit()
     await session.refresh(record)
     return record
+
+
+@router.get(
+    "/{backup_record_id}", response_model=BackupRecordRead, dependencies=[Depends(get_current_user)]
+)
+async def get_backup_record(backup_record_id: int, session: AsyncSession = Depends(get_db)) -> BackupRecord:
+    return await get_or_404(session, BackupRecord, backup_record_id)

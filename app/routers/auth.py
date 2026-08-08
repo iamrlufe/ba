@@ -2,11 +2,24 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.core.auth import (
+    create_access_token,
+    create_bot_access_token,
+    get_current_user,
+    hash_password,
+    verify_password,
+)
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.security import encrypt_secret
 from app.models.user import User
-from app.schemas.auth import LoginRequest, LoginResponse, MeResponse
+from app.schemas.auth import (
+    LoginRequest,
+    LoginResponse,
+    MeResponse,
+    TelegramLinkRequest,
+    TelegramLinkResponse,
+)
 
 router = APIRouter(tags=["auth"])
 
@@ -42,3 +55,38 @@ async def login(payload: LoginRequest, session: AsyncSession = Depends(get_db)) 
 @router.get("/me", response_model=MeResponse)
 async def get_me(current_user: User = Depends(get_current_user)) -> User:
     return current_user
+
+
+@router.post("/telegram-link", response_model=TelegramLinkResponse)
+async def telegram_link(
+    payload: TelegramLinkRequest, session: AsyncSession = Depends(get_db)
+) -> TelegramLinkResponse:
+    """Link a Telegram account to an existing user, in exchange for a
+    long-lived bot-scoped JWT (see app.core.auth.create_bot_access_token).
+    No auth dependency -- the body IS the credential, exactly like /login.
+
+    No pre-check SELECT for telegram_user_id uniqueness -- relies on the
+    global IntegrityError -> 409 handler, exactly like
+    app.routers.users::create_user does.
+    """
+    stmt = select(User).where(User.username == payload.username)
+    user = (await session.execute(stmt)).scalar_one_or_none()
+
+    password_ok = verify_password(payload.password, user.hashed_password if user else _DUMMY_HASH)
+
+    # Same generic 401 for not-found, wrong-password, and inactive-user --
+    # never leak which case applies.
+    if user is None or not password_ok or not user.is_active:
+        raise HTTPException(status_code=401, detail=_INVALID_CREDENTIALS_DETAIL)
+
+    token = create_bot_access_token(user_id=user.id, username=user.username, role=user.role)
+    user.telegram_user_id = payload.telegram_user_id
+    user.telegram_bot_token_encrypted = encrypt_secret(token)
+    await session.commit()
+
+    return TelegramLinkResponse(
+        bot_access_token=token,
+        expires_in=settings.BOT_TOKEN_EXPIRE_MINUTES * 60,
+        username=user.username,
+        role=user.role,
+    )
