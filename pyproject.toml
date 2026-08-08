@@ -1,0 +1,33 @@
+[project]
+name = "backup-orchestrator"
+version = "0.1.0"
+description = "Backend service for monitoring and orchestrating backups (FTP/SFTP transfer, SQL Server verification, DB restore, Telegram + web management)."
+authors = [
+    { name = "Roman", email = "iam@rlufe.kz" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    "aiosqlite>=0.20",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "cryptography>=43.0",
+    "greenlet>=3.5.4",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
