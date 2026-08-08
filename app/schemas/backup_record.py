@@ -27,6 +27,10 @@ class BackupRecordSyncItem(BackupRecordBase):
     job_run_id: int | None = None
 
 
+class BackupRecordCreate(BackupRecordSyncItem):
+    backup_job_id: int
+
+
 class BackupRecordChecksumUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 

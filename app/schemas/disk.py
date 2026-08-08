@@ -72,3 +72,15 @@ class DiskUsageUpdate(BaseModel):
         if self.free_bytes > self.total_bytes:
             raise ValueError("free_bytes cannot exceed total_bytes")
         return self
+
+
+class AgentDiskUsageItem(DiskUsageUpdate):
+    """One disk-usage sample reported by an agent heartbeat.
+
+    Identifies the disk by `(server_id, mount_path)` -- `server_id` comes
+    from the heartbeat path parameter, not this schema. See
+    app/schemas/agent.py::AgentHeartbeatRequest / app/routers/agents.py.
+    """
+
+    mount_path: str = Field(min_length=1, max_length=500)
+    label: str | None = Field(default=None, max_length=255)

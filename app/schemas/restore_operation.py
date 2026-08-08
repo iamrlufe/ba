@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import (
     RESTORE_TERMINAL_STATUSES,
@@ -8,6 +8,7 @@ from app.models.enums import (
     RestoreMode,
     RestoreStatus,
 )
+from app.schemas._datetime import normalize_to_utc
 
 
 class RestoreOperationBase(BaseModel):
@@ -55,6 +56,11 @@ class RestoreOperationUpdate(BaseModel):
     completed_at: datetime | None = None
     log: str | None = None
     error_message: str | None = None
+
+    @field_validator("started_at", "completed_at")
+    @classmethod
+    def _normalize_started_completed_to_utc(cls, value: datetime | None) -> datetime | None:
+        return normalize_to_utc(value)
 
 
 def is_valid_transition(old_status: RestoreStatus, new_status: RestoreStatus) -> bool:

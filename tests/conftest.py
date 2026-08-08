@@ -19,11 +19,14 @@ from __future__ import annotations
 import itertools
 
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 import app.core.db  # noqa: F401 -- registers the PRAGMA foreign_keys=ON listener globally
 import app.models  # noqa: F401 -- populates Base.metadata with every model
+from app.core.db import get_db
+from app.main import app as fastapi_app
 from app.models import (
     Alert,
     BackupJob,
@@ -76,6 +79,39 @@ async def session(engine):
     async with maker() as s:
         yield s
         await s.rollback()
+
+
+@pytest_asyncio.fixture
+async def session_maker(engine):
+    """Session factory bound to the same in-memory test engine.
+
+    Used by the HTTP-layer test fixtures below so that each request gets
+    its own fresh `AsyncSession` -- exactly like the real `app.core.db.get_db`
+    dependency -- rather than every request sharing a single long-lived
+    `AsyncSession` object (which is not safe for the concurrent/"two
+    requests racing" tests in tests/test_routers_job_runs.py and
+    tests/test_routers_restore_operations.py).
+    """
+    return async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest_asyncio.fixture
+async def client(session_maker):
+    """An `httpx.AsyncClient` wired to the real FastAPI app via ASGITransport,
+    with `get_db` overridden to hand out sessions bound to the in-memory
+    test engine (see `session_maker` above) instead of the real
+    file-backed DB configured in `app.core.config.settings`.
+    """
+
+    async def _override_get_db():
+        async with session_maker() as s:
+            yield s
+
+    fastapi_app.dependency_overrides[get_db] = _override_get_db
+    transport = ASGITransport(app=fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+    fastapi_app.dependency_overrides.pop(get_db, None)
 
 
 # --------------------------------------------------------------------------

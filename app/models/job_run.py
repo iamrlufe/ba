@@ -1,6 +1,17 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -28,6 +39,15 @@ class JobRun(TimestampMixin, Base):
             "backup_job_id",
             unique=True,
             sqlite_where=text(_ACTIVE_RUN_WHERE),
+        ),
+        # Progress-reporting fields (see alembic/versions/0002_job_run_progress_fields.py).
+        CheckConstraint(
+            "percent IS NULL OR (percent >= 0 AND percent <= 100)",
+            name="percent_range",
+        ),
+        CheckConstraint(
+            "bytes_done IS NULL OR bytes_done >= 0",
+            name="bytes_done_non_negative",
         ),
     )
 
@@ -58,6 +78,13 @@ class JobRun(TimestampMixin, Base):
     verification_details: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     log_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Live-progress fields, updated via PATCH /api/job-runs/{id} and
+    # broadcast over the /ws/job-runs/{id} WebSocket -- see
+    # app/routers/job_runs.py / app/routers/job_run_ws.py.
+    percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    current_file: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    bytes_done: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     backup_job: Mapped["BackupJob"] = relationship("BackupJob", back_populates="runs")
     backup_records: Mapped[list["BackupRecord"]] = relationship(
