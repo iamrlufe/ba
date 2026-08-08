@@ -9,17 +9,17 @@ from app.models.enums import AlertType, ServerStatus
 from conftest import build_disk, build_server
 
 
-async def test_heartbeat_missing_server_is_404(client):
-    resp = await client.post("/api/agents/999999/heartbeat", json={"reachable": True})
+async def test_heartbeat_missing_server_is_404(admin_client):
+    resp = await admin_client.post("/api/agents/999999/heartbeat", json={"reachable": True})
     assert resp.status_code == 404
 
 
-async def test_heartbeat_reachable_sets_active_and_updates_last_seen(client, session):
+async def test_heartbeat_reachable_sets_active_and_updates_last_seen(admin_client, session):
     server = build_server(status=ServerStatus.UNREACHABLE)
     session.add(server)
     await session.commit()
 
-    resp = await client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
+    resp = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
     assert resp.status_code == 200
     body = resp.json()
     assert body["server"]["status"] == "ACTIVE"
@@ -28,12 +28,12 @@ async def test_heartbeat_reachable_sets_active_and_updates_last_seen(client, ses
     assert body["alerts_raised"] == []
 
 
-async def test_heartbeat_unreachable_sets_status_and_raises_alert(client, session):
+async def test_heartbeat_unreachable_sets_status_and_raises_alert(admin_client, session):
     server = build_server(status=ServerStatus.ACTIVE)
     session.add(server)
     await session.commit()
 
-    resp = await client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": False})
+    resp = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": False})
     assert resp.status_code == 200
     body = resp.json()
     assert body["server"]["status"] == "UNREACHABLE"
@@ -41,19 +41,19 @@ async def test_heartbeat_unreachable_sets_status_and_raises_alert(client, sessio
     assert body["alerts_raised"][0]["alert_type"] == AlertType.SERVER_UNREACHABLE.value
 
 
-async def test_heartbeat_unreachable_twice_does_not_duplicate_alert(client, session):
+async def test_heartbeat_unreachable_twice_does_not_duplicate_alert(admin_client, session):
     server = build_server(status=ServerStatus.ACTIVE)
     session.add(server)
     await session.commit()
 
-    r1 = await client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": False})
+    r1 = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": False})
     assert len(r1.json()["alerts_raised"]) == 1
     first_alert_id = r1.json()["alerts_raised"][0]["id"]
 
     # Second heartbeat re-reports the still-active alert (idempotent), but
     # must not create a second, distinct Alert row -- same id both times,
     # and only one ACTIVE SERVER_UNREACHABLE alert exists in the DB.
-    r2 = await client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": False})
+    r2 = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": False})
     assert len(r2.json()["alerts_raised"]) == 1
     assert r2.json()["alerts_raised"][0]["id"] == first_alert_id
 
@@ -69,35 +69,35 @@ async def test_heartbeat_unreachable_twice_does_not_duplicate_alert(client, sess
     assert count == 1
 
 
-async def test_heartbeat_recovers_and_resolves_alert(client, session):
+async def test_heartbeat_recovers_and_resolves_alert(admin_client, session):
     server = build_server(status=ServerStatus.ACTIVE)
     session.add(server)
     await session.commit()
 
-    down = await client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": False})
+    down = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": False})
     assert len(down.json()["alerts_raised"]) == 1
 
-    up = await client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
+    up = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
     assert len(up.json()["alerts_resolved"]) == 1
     assert up.json()["alerts_resolved"][0]["alert_type"] == AlertType.SERVER_UNREACHABLE.value
 
 
-async def test_heartbeat_disabled_server_never_reactivated(client, session):
+async def test_heartbeat_disabled_server_never_reactivated(admin_client, session):
     server = build_server(status=ServerStatus.DISABLED)
     session.add(server)
     await session.commit()
 
-    resp = await client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
+    resp = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
     assert resp.status_code == 200
     assert resp.json()["server"]["status"] == "DISABLED"
 
 
-async def test_heartbeat_new_disk_created_inactive(client, session):
+async def test_heartbeat_new_disk_created_inactive(admin_client, session):
     server = build_server()
     session.add(server)
     await session.commit()
 
-    resp = await client.post(
+    resp = await admin_client.post(
         f"/api/agents/{server.id}/heartbeat",
         json={
             "reachable": True,
@@ -114,7 +114,7 @@ async def test_heartbeat_new_disk_created_inactive(client, session):
     assert resp.json()["alerts_raised"] == []
 
 
-async def test_heartbeat_existing_active_disk_critical_threshold_raises_alert(client, session):
+async def test_heartbeat_existing_active_disk_critical_threshold_raises_alert(admin_client, session):
     server = build_server()
     session.add(server)
     await session.commit()
@@ -122,7 +122,7 @@ async def test_heartbeat_existing_active_disk_critical_threshold_raises_alert(cl
     session.add(disk)
     await session.commit()
 
-    resp = await client.post(
+    resp = await admin_client.post(
         f"/api/agents/{server.id}/heartbeat",
         json={
             "reachable": True,
@@ -135,7 +135,7 @@ async def test_heartbeat_existing_active_disk_critical_threshold_raises_alert(cl
     assert any(a["alert_type"] == AlertType.DISK_SPACE_CRITICAL.value for a in body["alerts_raised"])
 
 
-async def test_heartbeat_disk_usage_drops_below_threshold_resolves_alert(client, session):
+async def test_heartbeat_disk_usage_drops_below_threshold_resolves_alert(admin_client, session):
     server = build_server()
     session.add(server)
     await session.commit()
@@ -145,7 +145,7 @@ async def test_heartbeat_disk_usage_drops_below_threshold_resolves_alert(client,
     session.add(disk)
     await session.commit()
 
-    critical = await client.post(
+    critical = await admin_client.post(
         f"/api/agents/{server.id}/heartbeat",
         json={
             "reachable": True,
@@ -154,7 +154,7 @@ async def test_heartbeat_disk_usage_drops_below_threshold_resolves_alert(client,
     )
     assert any(a["alert_type"] == AlertType.DISK_SPACE_CRITICAL.value for a in critical.json()["alerts_raised"])
 
-    recovered = await client.post(
+    recovered = await admin_client.post(
         f"/api/agents/{server.id}/heartbeat",
         json={
             "reachable": True,
@@ -165,12 +165,12 @@ async def test_heartbeat_disk_usage_drops_below_threshold_resolves_alert(client,
     assert AlertType.DISK_SPACE_CRITICAL.value in resolved_types
 
 
-async def test_heartbeat_validation_error_on_bad_disk_usage(client, session):
+async def test_heartbeat_validation_error_on_bad_disk_usage(admin_client, session):
     server = build_server()
     session.add(server)
     await session.commit()
 
-    resp = await client.post(
+    resp = await admin_client.post(
         f"/api/agents/{server.id}/heartbeat",
         json={
             "reachable": True,

@@ -1,9 +1,4 @@
-"""Application settings, loaded from environment variables / .env file.
-
-Only the settings needed by the models/schemas layer are defined here
-(DATABASE_URL, FERNET_KEY). Anything HTTP/auth-related belongs to a future
-module.
-"""
+"""Application settings, loaded from environment variables / .env file."""
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,6 +24,28 @@ class Settings(BaseSettings):
     # Echo SQL statements (debugging only, never enable in production since
     # it can log parameter values).
     SQL_ECHO: bool = False
+
+    # JWT signing secret (HS256). Must be a long random string, e.g. output
+    # of `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+    JWT_SECRET_KEY: str
+
+    # JWT signing algorithm.
+    JWT_ALGORITHM: str = "HS256"
+
+    # Access token lifetime in minutes. Single-token scheme (no refresh
+    # token, no revocation list).
+    JWT_EXPIRE_MINUTES: int = 60
+
+    # Bootstrap admin, consumed once at startup (see app/main.py lifespan).
+    # Both must be set together; if only one is set, startup fails loudly.
+    BOOTSTRAP_ADMIN_USERNAME: str | None = None
+    BOOTSTRAP_ADMIN_PASSWORD: str | None = None
+
+    # Static shared-secret key agents/schedulers present via the X-Agent-Key
+    # header to call agent-driven endpoints (heartbeat, job-run lifecycle,
+    # backup-record upsert). Single key for all agents (no per-agent
+    # provisioning/rotation in this pass) -- deliberately simple.
+    AGENT_API_KEY: str
 
 
 @lru_cache

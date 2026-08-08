@@ -20,14 +20,18 @@ to the loop it was first used on).
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
+import jwt
 from httpx import AsyncClient
 from httpx_ws import aconnect_ws
 
+from app.core.config import settings
 from app.core.db import get_db
 from app.core.ws_manager import JobRunConnectionManager, manager
 from app.main import app as fastapi_app
-from app.models.enums import JobRunStatus
-from conftest import build_backup_job, build_disk, build_job_run, build_server
+from app.models.enums import JobRunStatus, UserRole
+from conftest import build_backup_job, build_disk, build_job_run, build_server, build_user, mint_token
 
 
 async def _enabled_job(session):
@@ -43,11 +47,31 @@ async def _enabled_job(session):
     return job
 
 
-async def _ws_client(session_maker):
+async def _authed_user_and_token(session):
+    """A live User row (needed by get_current_user/the WS token check) plus
+    a matching JWT. ADMIN so the same token also satisfies
+    require_admin_or_agent_key on the HTTP `.../complete` calls these tests
+    issue against `ws_client`."""
+    user = build_user(role=UserRole.ADMIN)
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    token = mint_token(user.id, user.username, user.role)
+    return user, token
+
+
+async def _ws_client(session_maker, token: str):
     """An httpx.AsyncClient wired to the real app over a real ASGI
     websocket-capable transport, sharing the given session_maker's engine
     (see module docstring for why this can't be the plain `client` fixture
-    -- that one uses `httpx.ASGITransport`, which is HTTP-only)."""
+    -- that one uses `httpx.ASGITransport`, which is HTTP-only).
+
+    The Authorization header covers the HTTP `.../complete` calls issued
+    directly against this client (require_admin_or_agent_key accepts an
+    admin JWT); the WS connection itself authenticates separately via a
+    `?token=` query param (browsers can't set custom headers on the WS
+    handshake), appended by each test at `aconnect_ws(...)` call sites.
+    """
     from httpx_ws.transport import ASGIWebSocketTransport
 
     async def _override_get_db():
@@ -56,7 +80,9 @@ async def _ws_client(session_maker):
 
     fastapi_app.dependency_overrides[get_db] = _override_get_db
     transport = ASGIWebSocketTransport(app=fastapi_app)
-    return AsyncClient(transport=transport, base_url="http://test")
+    return AsyncClient(
+        transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {token}"}
+    )
 
 
 async def test_ws_delivers_initial_state_then_final_message_on_completion(session, session_maker):
@@ -69,10 +95,12 @@ async def test_ws_delivers_initial_state_then_final_message_on_completion(sessio
     await session.commit()
     run_id = run.id
 
-    ws_client = await _ws_client(session_maker)
+    _user, token = await _authed_user_and_token(session)
+
+    ws_client = await _ws_client(session_maker, token)
     try:
         async with ws_client:
-            async with aconnect_ws(f"/ws/job-runs/{run_id}", ws_client) as ws:
+            async with aconnect_ws(f"/ws/job-runs/{run_id}?token={token}", ws_client) as ws:
                 initial = await ws.receive_json()
                 assert initial["status"] == "RUNNING"
 
@@ -99,10 +127,12 @@ async def test_ws_sends_terminal_state_immediately_when_already_terminal_at_conn
     await session.commit()
     run_id = run.id
 
-    ws_client = await _ws_client(session_maker)
+    _user, token = await _authed_user_and_token(session)
+
+    ws_client = await _ws_client(session_maker, token)
     try:
         async with ws_client:
-            async with aconnect_ws(f"/ws/job-runs/{run_id}", ws_client) as ws:
+            async with aconnect_ws(f"/ws/job-runs/{run_id}?token={token}", ws_client) as ws:
                 msg = await ws.receive_json()
                 assert msg["status"] == "SUCCESS"
     finally:
@@ -132,7 +162,9 @@ async def test_ws_delivers_final_message_when_run_completes_in_race_window(sessi
     await session.commit()
     run_id = run.id
 
-    ws_client = await _ws_client(session_maker)
+    _user, token = await _authed_user_and_token(session)
+
+    ws_client = await _ws_client(session_maker, token)
 
     real_connect = JobRunConnectionManager.connect
     triggered = {"done": False}
@@ -152,7 +184,7 @@ async def test_ws_delivers_final_message_when_run_completes_in_race_window(sessi
 
     try:
         async with ws_client:
-            async with aconnect_ws(f"/ws/job-runs/{run_id}", ws_client) as ws:
+            async with aconnect_ws(f"/ws/job-runs/{run_id}?token={token}", ws_client) as ws:
                 msg = await ws.receive_json()
                 # The socket must see the run as already FAILED -- either
                 # via the completion's live broadcast, or via the handler's
@@ -164,3 +196,106 @@ async def test_ws_delivers_final_message_when_run_completes_in_race_window(sessi
         fastapi_app.dependency_overrides.pop(get_db, None)
 
     assert triggered["done"] is True
+
+
+async def test_ws_rejects_connection_missing_token(session, session_maker):
+    """No `?token=` query param -- the handler must accept() then
+    immediately close with 4401, not hang or 500."""
+    from httpx_ws import WebSocketDisconnect
+
+    job = await _enabled_job(session)
+    run = build_job_run(job.id, status=JobRunStatus.RUNNING)
+    session.add(run)
+    await session.commit()
+    run_id = run.id
+
+    _user, token = await _authed_user_and_token(session)
+    ws_client = await _ws_client(session_maker, token)
+    try:
+        async with ws_client:
+            got_disconnect = None
+            try:
+                async with aconnect_ws(f"/ws/job-runs/{run_id}", ws_client) as ws:
+                    await ws.receive_json()
+                raise AssertionError("expected the connection to be closed by the server")
+            except* WebSocketDisconnect as eg:
+                got_disconnect = eg.exceptions[0]
+            assert got_disconnect is not None and got_disconnect.code == 4401
+    finally:
+        fastapi_app.dependency_overrides.pop(get_db, None)
+
+
+async def test_ws_rejects_connection_invalid_token(session, session_maker):
+    """A garbage/invalid token -- same 4401 rejection as a missing one."""
+    from httpx_ws import WebSocketDisconnect
+
+    job = await _enabled_job(session)
+    run = build_job_run(job.id, status=JobRunStatus.RUNNING)
+    session.add(run)
+    await session.commit()
+    run_id = run.id
+
+    _user, token = await _authed_user_and_token(session)
+    ws_client = await _ws_client(session_maker, token)
+    try:
+        async with ws_client:
+            got_disconnect = None
+            try:
+                async with aconnect_ws(
+                    f"/ws/job-runs/{run_id}?token=not-a-real-jwt", ws_client
+                ) as ws:
+                    await ws.receive_json()
+                raise AssertionError("expected the connection to be closed by the server")
+            except* WebSocketDisconnect as eg:
+                got_disconnect = eg.exceptions[0]
+            assert got_disconnect is not None and got_disconnect.code == 4401
+    finally:
+        fastapi_app.dependency_overrides.pop(get_db, None)
+
+
+async def test_ws_rejects_connection_expired_token(session, session_maker):
+    """A structurally-valid but expired JWT -- same 4401 rejection as a
+    missing/garbage token (decode_access_token raises jwt.ExpiredSignatureError,
+    a jwt.PyJWTError subclass, which job_run_ws.py must catch)."""
+    from httpx_ws import WebSocketDisconnect
+
+    job = await _enabled_job(session)
+    run = build_job_run(job.id, status=JobRunStatus.RUNNING)
+    session.add(run)
+    await session.commit()
+    run_id = run.id
+
+    user, valid_token = await _authed_user_and_token(session)
+
+    now = datetime.now(UTC)
+    expired_token = jwt.encode(
+        {
+            "sub": str(user.id),
+            "username": user.username,
+            "role": user.role.value,
+            "iat": now - timedelta(minutes=120),
+            "exp": now - timedelta(minutes=60),
+        },
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+
+    # valid_token is used for the HTTP Authorization header on ws_client
+    # (unused by this test, but required by _ws_client's signature); the
+    # expired token is what's passed as the WS `?token=` query param under
+    # test.
+    ws_client = await _ws_client(session_maker, valid_token)
+    try:
+        async with ws_client:
+            got_disconnect = None
+            try:
+                async with aconnect_ws(
+                    f"/ws/job-runs/{run_id}?token={expired_token}", ws_client
+                ) as ws:
+                    await ws.receive_json()
+                raise AssertionError("expected the connection to be closed by the server")
+            except* WebSocketDisconnect as eg:
+                got_disconnect = eg.exceptions[0]
+            assert got_disconnect is not None and got_disconnect.code == 4401
+    finally:
+        fastapi_app.dependency_overrides.pop(get_db, None)

@@ -1,9 +1,10 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.models.alert import Alert
 from app.models.backup_record import BackupRecord
@@ -12,10 +13,13 @@ from app.models.enums import (
     AlertSeverity,
     AlertType,
     RequestChannel,
+    RestoreMode,
     RestoreStatus,
+    UserRole,
 )
 from app.models.restore_operation import RestoreOperation
 from app.models.sql_instance import SqlInstance
+from app.models.user import User
 from app.routers._alerts import raise_alert_if_absent
 from app.routers._deps import get_or_404
 from app.schemas.common import PaginatedResponse
@@ -30,26 +34,27 @@ from app.schemas.restore_operation import (
 router = APIRouter(tags=["restore-operations"])
 
 
-async def get_current_requester(
-    x_requested_by: str | None = Header(default=None),
-) -> tuple[str, RequestChannel]:
-    # TODO(auth): replace with a real authenticated principal once the auth module exists.
-    return (x_requested_by or "unknown", RequestChannel.WEB)
-
-
 @router.post("", response_model=RestoreOperationRead, status_code=201)
 async def create_restore_operation(
     payload: RestoreOperationCreate,
     session: AsyncSession = Depends(get_db),
-    requester: tuple[str, RequestChannel] = Depends(get_current_requester),
+    current_user: User = Depends(get_current_user),
 ) -> RestoreOperation:
+    if current_user.role == UserRole.OPERATOR and payload.mode != RestoreMode.MISSING:
+        raise HTTPException(
+            status_code=403,
+            detail="Operators may only create restore operations with mode=MISSING",
+        )
+    # role is ADMIN, or role is OPERATOR with mode==MISSING -- both permitted
+
     await get_or_404(session, BackupRecord, payload.backup_record_id)
 
     sql_instance = await get_or_404(session, SqlInstance, payload.sql_instance_id)
     if sql_instance.is_deleted:
         raise HTTPException(status_code=409, detail="Cannot restore into a deleted sql instance")
 
-    requested_by, requested_by_channel = requester
+    requested_by = current_user.username
+    requested_by_channel = RequestChannel.WEB
 
     # Deliberately no local try/except: a conflicting active
     # (PENDING/RUNNING) restore for the same (sql_instance_id,
@@ -70,7 +75,9 @@ async def create_restore_operation(
     return restore
 
 
-@router.get("", response_model=PaginatedResponse[RestoreOperationRead])
+@router.get(
+    "", response_model=PaginatedResponse[RestoreOperationRead], dependencies=[Depends(get_current_user)]
+)
 async def list_restore_operations(
     status: RestoreStatus | None = None,
     sql_instance_id: int | None = None,
@@ -102,21 +109,33 @@ async def list_restore_operations(
     )
 
 
-@router.get("/{restore_operation_id}", response_model=RestoreOperationRead)
+@router.get(
+    "/{restore_operation_id}",
+    response_model=RestoreOperationRead,
+    dependencies=[Depends(get_current_user)],
+)
 async def get_restore_operation(
     restore_operation_id: int, session: AsyncSession = Depends(get_db)
 ) -> RestoreOperation:
     return await get_or_404(session, RestoreOperation, restore_operation_id)
 
 
-@router.get("/{restore_operation_id}/log", response_model=RestoreOperationLogRead)
+@router.get(
+    "/{restore_operation_id}/log",
+    response_model=RestoreOperationLogRead,
+    dependencies=[Depends(get_current_user)],
+)
 async def get_restore_operation_log(
     restore_operation_id: int, session: AsyncSession = Depends(get_db)
 ) -> RestoreOperation:
     return await get_or_404(session, RestoreOperation, restore_operation_id)
 
 
-@router.patch("/{restore_operation_id}", response_model=RestoreOperationRead)
+@router.patch(
+    "/{restore_operation_id}",
+    response_model=RestoreOperationRead,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def update_restore_operation(
     restore_operation_id: int, payload: RestoreOperationUpdate, session: AsyncSession = Depends(get_db)
 ) -> RestoreOperation:

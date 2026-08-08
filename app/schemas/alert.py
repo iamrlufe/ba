@@ -11,9 +11,11 @@ from app.models.enums import AlertChannel, AlertSeverity, AlertStatus, AlertType
 
 
 class AlertAcknowledgeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """Empty body -- `acknowledged_by` is derived from the authenticated
+    JWT principal in the router handler, not client-supplied (see
+    app.routers.alerts.acknowledge_alert)."""
 
-    acknowledged_by: str = Field(min_length=1, max_length=255)
+    model_config = ConfigDict(extra="forbid")
 
 
 class AlertResolveRequest(BaseModel):

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import require_admin_or_agent_key
 from app.core.db import get_db
 from app.models.alert import Alert
 from app.models.disk import Disk
@@ -26,7 +27,11 @@ from app.schemas.server import ServerRead
 router = APIRouter(tags=["agents"])
 
 
-@router.post("/{server_id}/heartbeat", response_model=AgentHeartbeatResponse)
+@router.post(
+    "/{server_id}/heartbeat",
+    response_model=AgentHeartbeatResponse,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
 async def agent_heartbeat(
     server_id: int, payload: AgentHeartbeatRequest, session: AsyncSession = Depends(get_db)
 ) -> AgentHeartbeatResponse:

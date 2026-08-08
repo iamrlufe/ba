@@ -16,6 +16,9 @@ dependencies = [
     "pydantic-settings>=2.6",
     "cryptography>=43.0",
     "greenlet>=3.5.4",
+    "pyjwt>=2.10",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt==4.0.1",
 ]
 
 [tool.uv]

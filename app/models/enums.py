@@ -88,6 +88,11 @@ class RequestChannel(str, Enum):
     TELEGRAM = "TELEGRAM"
 
 
+class UserRole(str, Enum):
+    ADMIN = "ADMIN"
+    OPERATOR = "OPERATOR"
+
+
 # --- Terminal status sets, shared by model docstrings and Pydantic transition
 # validators (app/schemas/job_run.py, app/schemas/restore_operation.py). ---
 

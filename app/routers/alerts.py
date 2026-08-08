@@ -4,9 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.models.alert import Alert
-from app.models.enums import AlertSeverity, AlertStatus, AlertType
+from app.models.enums import AlertSeverity, AlertStatus, AlertType, UserRole
+from app.models.user import User
 from app.routers._deps import get_or_404
 from app.schemas.alert import AlertAcknowledgeRequest, AlertRead, AlertResolveRequest
 from app.schemas.common import PaginatedResponse
@@ -14,7 +16,7 @@ from app.schemas.common import PaginatedResponse
 router = APIRouter(tags=["alerts"])
 
 
-@router.get("", response_model=PaginatedResponse[AlertRead])
+@router.get("", response_model=PaginatedResponse[AlertRead], dependencies=[Depends(get_current_user)])
 async def list_alerts(
     status: AlertStatus | None = None,
     severity: AlertSeverity | None = None,
@@ -46,9 +48,15 @@ async def list_alerts(
     )
 
 
-@router.post("/{alert_id}/acknowledge", response_model=AlertRead)
+@router.post(
+    "/{alert_id}/acknowledge",
+    response_model=AlertRead,
+)
 async def acknowledge_alert(
-    alert_id: int, payload: AlertAcknowledgeRequest, session: AsyncSession = Depends(get_db)
+    alert_id: int,
+    payload: AlertAcknowledgeRequest,
+    session: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
 ) -> Alert:
     alert = await get_or_404(session, Alert, alert_id)
     if alert.status == AlertStatus.RESOLVED:
@@ -57,7 +65,7 @@ async def acknowledge_alert(
     # Idempotent if already ACKNOWLEDGED -- acknowledged_by/acknowledged_at
     # may be overwritten, this is not treated as a conflict.
     alert.status = AlertStatus.ACKNOWLEDGED
-    alert.acknowledged_by = payload.acknowledged_by
+    alert.acknowledged_by = current_user.username
     alert.acknowledged_at = datetime.now(UTC)
 
     await session.commit()
@@ -65,7 +73,11 @@ async def acknowledge_alert(
     return alert
 
 
-@router.post("/{alert_id}/resolve", response_model=AlertRead)
+@router.post(
+    "/{alert_id}/resolve",
+    response_model=AlertRead,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def resolve_alert(
     alert_id: int, payload: AlertResolveRequest, session: AsyncSession = Depends(get_db)
 ) -> Alert:

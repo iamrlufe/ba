@@ -13,8 +13,8 @@ from conftest import (
 )
 
 
-async def test_create_sql_instance_happy_path(client):
-    resp = await client.post(
+async def test_create_sql_instance_happy_path(admin_client):
+    resp = await admin_client.post(
         "/api/sql-instances",
         json={
             "name": "sql-1",
@@ -31,16 +31,16 @@ async def test_create_sql_instance_happy_path(client):
     assert "s3cret" not in resp.text
 
 
-async def test_create_sql_instance_requires_credentials_when_not_windows_auth(client):
-    resp = await client.post(
+async def test_create_sql_instance_requires_credentials_when_not_windows_auth(admin_client):
+    resp = await admin_client.post(
         "/api/sql-instances",
         json={"name": "sql-2", "host": "10.0.1.2", "use_windows_auth": False},
     )
     assert resp.status_code == 422
 
 
-async def test_create_sql_instance_windows_auth_ok_without_credentials(client):
-    resp = await client.post(
+async def test_create_sql_instance_windows_auth_ok_without_credentials(admin_client):
+    resp = await admin_client.post(
         "/api/sql-instances",
         json={"name": "sql-3", "host": "10.0.1.3", "use_windows_auth": True},
     )
@@ -48,8 +48,8 @@ async def test_create_sql_instance_windows_auth_ok_without_credentials(client):
     assert resp.json()["credentials_set"] is False
 
 
-async def test_create_sql_instance_secret_encrypted_at_rest(client, session):
-    resp = await client.post(
+async def test_create_sql_instance_secret_encrypted_at_rest(admin_client, session):
+    resp = await admin_client.post(
         "/api/sql-instances",
         json={
             "name": "sql-secret",
@@ -70,33 +70,33 @@ async def test_create_sql_instance_secret_encrypted_at_rest(client, session):
     assert decrypt_secret(db_instance.password_encrypted) == "plain-pw"
 
 
-async def test_create_sql_instance_with_deleted_server_is_409(client, session):
+async def test_create_sql_instance_with_deleted_server_is_409(admin_client, session):
     server = build_server(is_deleted=True)
     session.add(server)
     await session.commit()
 
-    resp = await client.post(
+    resp = await admin_client.post(
         "/api/sql-instances",
         json={"name": "sql-4", "host": "h", "use_windows_auth": True, "server_id": server.id},
     )
     assert resp.status_code == 409
 
 
-async def test_create_sql_instance_with_missing_server_is_404(client):
-    resp = await client.post(
+async def test_create_sql_instance_with_missing_server_is_404(admin_client):
+    resp = await admin_client.post(
         "/api/sql-instances",
         json={"name": "sql-5", "host": "h", "use_windows_auth": True, "server_id": 999999},
     )
     assert resp.status_code == 404
 
 
-async def test_get_sql_instance_404(client):
-    resp = await client.get("/api/sql-instances/999999")
+async def test_get_sql_instance_404(admin_client):
+    resp = await admin_client.get("/api/sql-instances/999999")
     assert resp.status_code == 404
 
 
-async def test_update_sql_instance_clears_secret(client):
-    create = await client.post(
+async def test_update_sql_instance_clears_secret(admin_client):
+    create = await admin_client.post(
         "/api/sql-instances",
         json={
             "name": "sql-upd",
@@ -108,21 +108,21 @@ async def test_update_sql_instance_clears_secret(client):
     )
     instance_id = create.json()["id"]
 
-    resp = await client.patch(f"/api/sql-instances/{instance_id}", json={"password": "", "username": ""})
+    resp = await admin_client.patch(f"/api/sql-instances/{instance_id}", json={"password": "", "username": ""})
     assert resp.status_code == 200
     assert resp.json()["credentials_set"] is False
 
 
-async def test_update_deleted_sql_instance_is_409(client, session):
+async def test_update_deleted_sql_instance_is_409(admin_client, session):
     instance = build_sql_instance(is_deleted=True)
     session.add(instance)
     await session.commit()
 
-    resp = await client.patch(f"/api/sql-instances/{instance.id}", json={"notes": "x"})
+    resp = await admin_client.patch(f"/api/sql-instances/{instance.id}", json={"notes": "x"})
     assert resp.status_code == 409
 
 
-async def test_delete_sql_instance_with_active_restore_is_409(client, session):
+async def test_delete_sql_instance_with_active_restore_is_409(admin_client, session):
     instance = build_sql_instance()
     session.add(instance)
     await session.commit()
@@ -143,11 +143,11 @@ async def test_delete_sql_instance_with_active_restore_is_409(client, session):
     session.add(restore)
     await session.commit()
 
-    resp = await client.delete(f"/api/sql-instances/{instance.id}")
+    resp = await admin_client.delete(f"/api/sql-instances/{instance.id}")
     assert resp.status_code == 409
 
 
-async def test_delete_sql_instance_with_enabled_job_is_409(client, session):
+async def test_delete_sql_instance_with_enabled_job_is_409(admin_client, session):
     server = build_server()
     session.add(server)
     await session.commit()
@@ -163,22 +163,22 @@ async def test_delete_sql_instance_with_enabled_job_is_409(client, session):
     session.add(job)
     await session.commit()
 
-    resp = await client.delete(f"/api/sql-instances/{instance.id}")
+    resp = await admin_client.delete(f"/api/sql-instances/{instance.id}")
     assert resp.status_code == 409
 
 
-async def test_delete_sql_instance_soft_deletes(client, session):
+async def test_delete_sql_instance_soft_deletes(admin_client, session):
     instance = build_sql_instance()
     session.add(instance)
     await session.commit()
 
-    resp = await client.delete(f"/api/sql-instances/{instance.id}")
+    resp = await admin_client.delete(f"/api/sql-instances/{instance.id}")
     assert resp.status_code == 204
 
-    get_resp = await client.get(f"/api/sql-instances/{instance.id}")
+    get_resp = await admin_client.get(f"/api/sql-instances/{instance.id}")
     assert get_resp.json()["is_deleted"] is True
 
 
-async def test_delete_sql_instance_404(client):
-    resp = await client.delete("/api/sql-instances/999999")
+async def test_delete_sql_instance_404(admin_client):
+    resp = await admin_client.delete("/api/sql-instances/999999")
     assert resp.status_code == 404

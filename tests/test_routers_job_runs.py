@@ -20,10 +20,11 @@ from app.main import app as fastapi_app
 from app.models.backup_job import BackupJob
 from app.models.base import Base
 from app.models.disk import Disk
-from app.models.enums import JobRunStatus, ProtocolType
+from app.models.enums import JobRunStatus, ProtocolType, UserRole
 from app.models.job_run import JobRun
 from app.models.server import Server
-from conftest import build_backup_job, build_disk, build_job_run, build_server
+from app.models.user import User
+from conftest import build_backup_job, build_disk, build_job_run, build_server, mint_token
 
 
 async def _enabled_job(session):
@@ -44,14 +45,14 @@ async def _enabled_job(session):
 # --------------------------------------------------------------------------
 
 
-async def test_create_job_run_happy_path(client, session):
+async def test_create_job_run_happy_path(admin_client, session):
     job = await _enabled_job(session)
-    resp = await client.post("/api/job-runs", json={"backup_job_id": job.id, "triggered_by": "manual"})
+    resp = await admin_client.post("/api/job-runs", json={"backup_job_id": job.id, "triggered_by": "manual"})
     assert resp.status_code == 201
     assert resp.json()["status"] == "PENDING"
 
 
-async def test_create_job_run_disabled_job_is_409(client, session):
+async def test_create_job_run_disabled_job_is_409(admin_client, session):
     server = build_server()
     session.add(server)
     await session.commit()
@@ -62,57 +63,57 @@ async def test_create_job_run_disabled_job_is_409(client, session):
     session.add(job)
     await session.commit()
 
-    resp = await client.post("/api/job-runs", json={"backup_job_id": job.id})
+    resp = await admin_client.post("/api/job-runs", json={"backup_job_id": job.id})
     assert resp.status_code == 409
 
 
-async def test_create_job_run_missing_backup_job_is_404(client):
-    resp = await client.post("/api/job-runs", json={"backup_job_id": 999999})
+async def test_create_job_run_missing_backup_job_is_404(admin_client):
+    resp = await admin_client.post("/api/job-runs", json={"backup_job_id": 999999})
     assert resp.status_code == 404
 
 
-async def test_create_job_run_second_active_run_is_409(client, session):
+async def test_create_job_run_second_active_run_is_409(admin_client, session):
     job = await _enabled_job(session)
-    r1 = await client.post("/api/job-runs", json={"backup_job_id": job.id})
+    r1 = await admin_client.post("/api/job-runs", json={"backup_job_id": job.id})
     assert r1.status_code == 201
-    r2 = await client.post("/api/job-runs", json={"backup_job_id": job.id})
+    r2 = await admin_client.post("/api/job-runs", json={"backup_job_id": job.id})
     assert r2.status_code == 409
 
 
-async def test_get_job_run_404(client):
-    resp = await client.get("/api/job-runs/999999")
+async def test_get_job_run_404(admin_client):
+    resp = await admin_client.get("/api/job-runs/999999")
     assert resp.status_code == 404
 
 
-async def test_get_job_run_log(client, session):
+async def test_get_job_run_log(admin_client, session):
     job = await _enabled_job(session)
     run = build_job_run(job.id, log_output="line1\nline2")
     session.add(run)
     await session.commit()
 
-    resp = await client.get(f"/api/job-runs/{run.id}/log")
+    resp = await admin_client.get(f"/api/job-runs/{run.id}/log")
     assert resp.status_code == 200
     assert resp.json()["log_output"] == "line1\nline2"
 
 
-async def test_patch_job_run_valid_transition(client, session):
+async def test_patch_job_run_valid_transition(admin_client, session):
     job = await _enabled_job(session)
     run = build_job_run(job.id, status=JobRunStatus.PENDING)
     session.add(run)
     await session.commit()
 
-    resp = await client.patch(f"/api/job-runs/{run.id}", json={"status": "RUNNING"})
+    resp = await admin_client.patch(f"/api/job-runs/{run.id}", json={"status": "RUNNING"})
     assert resp.status_code == 200
     assert resp.json()["status"] == "RUNNING"
 
 
-async def test_patch_job_run_progress_fields(client, session):
+async def test_patch_job_run_progress_fields(admin_client, session):
     job = await _enabled_job(session)
     run = build_job_run(job.id, status=JobRunStatus.RUNNING)
     session.add(run)
     await session.commit()
 
-    resp = await client.patch(
+    resp = await admin_client.patch(
         f"/api/job-runs/{run.id}", json={"percent": 42, "current_file": "f.bak", "bytes_done": 1024}
     )
     assert resp.status_code == 200
@@ -122,27 +123,27 @@ async def test_patch_job_run_progress_fields(client, session):
     assert body["bytes_done"] == 1024
 
 
-async def test_patch_job_run_terminal_status_via_patch_is_422(client, session):
+async def test_patch_job_run_terminal_status_via_patch_is_422(admin_client, session):
     job = await _enabled_job(session)
     run = build_job_run(job.id, status=JobRunStatus.RUNNING)
     session.add(run)
     await session.commit()
 
-    resp = await client.patch(f"/api/job-runs/{run.id}", json={"status": "SUCCESS"})
+    resp = await admin_client.patch(f"/api/job-runs/{run.id}", json={"status": "SUCCESS"})
     assert resp.status_code == 422
 
 
-async def test_patch_job_run_already_terminal_is_409(client, session):
+async def test_patch_job_run_already_terminal_is_409(admin_client, session):
     job = await _enabled_job(session)
     run = build_job_run(job.id, status=JobRunStatus.SUCCESS, finished_at=datetime.now(UTC))
     session.add(run)
     await session.commit()
 
-    resp = await client.patch(f"/api/job-runs/{run.id}", json={"percent": 50})
+    resp = await admin_client.patch(f"/api/job-runs/{run.id}", json={"percent": 50})
     assert resp.status_code == 409
 
 
-async def test_patch_job_run_invalid_transition_terminal_back_to_pending_is_409(client, session):
+async def test_patch_job_run_invalid_transition_terminal_back_to_pending_is_409(admin_client, session):
     # Directly seed an invalid old_status via ORM bypassing the router so we
     # can exercise the transition-check branch specifically (not reachable
     # by going only through the API, since PATCH already 409s on any
@@ -156,12 +157,12 @@ async def test_patch_job_run_invalid_transition_terminal_back_to_pending_is_409(
     # is_valid_transition (only terminal -> PENDING/RUNNING is forbidden),
     # so this should succeed; used here as a control/happy-path check for
     # the transition validator wired into the PATCH handler.
-    resp = await client.patch(f"/api/job-runs/{run.id}", json={"status": "PENDING"})
+    resp = await admin_client.patch(f"/api/job-runs/{run.id}", json={"status": "PENDING"})
     assert resp.status_code == 200
 
 
-async def test_patch_job_run_404(client):
-    resp = await client.patch("/api/job-runs/999999", json={"percent": 1})
+async def test_patch_job_run_404(admin_client):
+    resp = await admin_client.patch("/api/job-runs/999999", json={"percent": 1})
     assert resp.status_code == 404
 
 
@@ -171,20 +172,20 @@ async def test_patch_job_run_404(client):
 # --------------------------------------------------------------------------
 
 
-async def test_complete_job_run_happy_path(client, session):
+async def test_complete_job_run_happy_path(admin_client, session):
     job = await _enabled_job(session)
     run = build_job_run(job.id, status=JobRunStatus.RUNNING, started_at=datetime.now(UTC))
     session.add(run)
     await session.commit()
 
-    resp = await client.post(f"/api/job-runs/{run.id}/complete", json={"status": "SUCCESS"})
+    resp = await admin_client.post(f"/api/job-runs/{run.id}/complete", json={"status": "SUCCESS"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "SUCCESS"
     assert body["finished_at"] is not None
 
 
-async def test_complete_job_run_double_completion_sequential_is_409_and_state_unchanged(client, session):
+async def test_complete_job_run_double_completion_sequential_is_409_and_state_unchanged(admin_client, session):
     """Sequential regression test: second POST .../complete on an
     already-completed run must 409 and must NOT alter the persisted
     status/finished_at from the first (successful) call."""
@@ -193,33 +194,33 @@ async def test_complete_job_run_double_completion_sequential_is_409_and_state_un
     session.add(run)
     await session.commit()
 
-    first = await client.post(f"/api/job-runs/{run.id}/complete", json={"status": "SUCCESS"})
+    first = await admin_client.post(f"/api/job-runs/{run.id}/complete", json={"status": "SUCCESS"})
     assert first.status_code == 200
     first_body = first.json()
     assert first_body["status"] == "SUCCESS"
     first_finished_at = first_body["finished_at"]
     assert first_finished_at is not None
 
-    second = await client.post(f"/api/job-runs/{run.id}/complete", json={"status": "FAILED"})
+    second = await admin_client.post(f"/api/job-runs/{run.id}/complete", json={"status": "FAILED"})
     assert second.status_code == 409
 
-    get_resp = await client.get(f"/api/job-runs/{run.id}")
+    get_resp = await admin_client.get(f"/api/job-runs/{run.id}")
     assert get_resp.status_code == 200
     persisted = get_resp.json()
     assert persisted["status"] == "SUCCESS"
     assert persisted["finished_at"] == first_finished_at
 
 
-async def test_patch_job_run_after_complete_is_409(client, session):
+async def test_patch_job_run_after_complete_is_409(admin_client, session):
     job = await _enabled_job(session)
     run = build_job_run(job.id, status=JobRunStatus.RUNNING, started_at=datetime.now(UTC))
     session.add(run)
     await session.commit()
 
-    complete_resp = await client.post(f"/api/job-runs/{run.id}/complete", json={"status": "SUCCESS"})
+    complete_resp = await admin_client.post(f"/api/job-runs/{run.id}/complete", json={"status": "SUCCESS"})
     assert complete_resp.status_code == 200
 
-    patch_resp = await client.patch(f"/api/job-runs/{run.id}", json={"percent": 100})
+    patch_resp = await admin_client.patch(f"/api/job-runs/{run.id}", json={"percent": 100})
     assert patch_resp.status_code == 409
 
 
@@ -230,7 +231,7 @@ async def test_complete_job_run_concurrent_double_completion_exactly_one_wins():
     <status read at request start>`) must prevent both from applying,
     which a naive read-then-write implementation would not guarantee.
 
-    Deliberately does NOT use the shared `client`/`session` fixtures from
+    Deliberately does NOT use the shared `admin_client`/`session` fixtures from
     conftest.py: those are bound to a `StaticPool`-backed in-memory SQLite
     engine that hands out multiple `AsyncSession`s over a *single* shared
     physical DBAPI connection. Two sessions concurrently holding open
@@ -279,8 +280,22 @@ async def test_complete_job_run_concurrent_double_completion_exactly_one_wins():
                 await s.commit()
                 run_id = run.id
 
+                admin = User(
+                    username="race-admin",
+                    hashed_password="unused",
+                    role=UserRole.ADMIN,
+                    is_active=True,
+                )
+                s.add(admin)
+                await s.commit()
+                token = mint_token(admin.id, admin.username, admin.role)
+
             transport = ASGITransport(app=fastapi_app)
-            async with AsyncClient(transport=transport, base_url="http://test") as race_client:
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as race_client:
                 results = await asyncio.gather(
                     race_client.post(f"/api/job-runs/{run_id}/complete", json={"status": "SUCCESS"}),
                     race_client.post(f"/api/job-runs/{run_id}/complete", json={"status": "FAILED"}),

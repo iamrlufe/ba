@@ -1,10 +1,13 @@
+import jwt
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import decode_access_token
 from app.core.db import get_db
 from app.core.ws_manager import manager
 from app.models.enums import JOB_RUN_TERMINAL_STATUSES
 from app.models.job_run import JobRun
+from app.models.user import User
 from app.schemas.job_run import JobRunRead
 
 router = APIRouter(tags=["job-run-ws"])
@@ -12,9 +15,24 @@ router = APIRouter(tags=["job-run-ws"])
 
 @router.websocket("/ws/job-runs/{job_run_id}")
 async def job_run_ws(
-    job_run_id: int, websocket: WebSocket, session: AsyncSession = Depends(get_db)
+    job_run_id: int,
+    websocket: WebSocket,
+    token: str | None = None,
+    session: AsyncSession = Depends(get_db),
 ) -> None:
     await websocket.accept()
+
+    if token is None:
+        await websocket.close(code=4401, reason="missing token")
+        return
+    try:
+        payload = decode_access_token(token)
+        user = await session.get(User, int(payload["sub"]))
+    except (jwt.PyJWTError, ValueError, KeyError):
+        user = None
+    if user is None or not user.is_active:
+        await websocket.close(code=4401, reason="invalid or expired token")
+        return
 
     # Register with the manager *before* reading status: if a concurrent
     # POST .../complete lands between accept() and here, its broadcast +

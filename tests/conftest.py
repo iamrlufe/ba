@@ -25,6 +25,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.core.db  # noqa: F401 -- registers the PRAGMA foreign_keys=ON listener globally
 import app.models  # noqa: F401 -- populates Base.metadata with every model
+from app.core.auth import create_access_token
 from app.core.db import get_db
 from app.main import app as fastapi_app
 from app.models import (
@@ -36,6 +37,7 @@ from app.models import (
     RestoreOperation,
     Server,
     SqlInstance,
+    User,
 )
 from app.models.base import Base
 from app.models.enums import (
@@ -44,6 +46,7 @@ from app.models.enums import (
     ProtocolType,
     RequestChannel,
     RestoreMode,
+    UserRole,
 )
 
 _counter = itertools.count(1)
@@ -112,6 +115,42 @@ async def client(session_maker):
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     fastapi_app.dependency_overrides.pop(get_db, None)
+
+
+def mint_token(user_id: int, username: str, role: UserRole) -> str:
+    return create_access_token(user_id=user_id, username=username, role=role)
+
+
+@pytest_asyncio.fixture
+async def admin_user(session) -> User:
+    user = build_user(username="admin-tester", role=UserRole.ADMIN)
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture
+async def operator_user(session) -> User:
+    user = build_user(username="operator-tester", role=UserRole.OPERATOR)
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture
+async def admin_client(client, admin_user):
+    token = mint_token(admin_user.id, admin_user.username, admin_user.role)
+    client.headers["Authorization"] = f"Bearer {token}"
+    yield client
+
+
+@pytest_asyncio.fixture
+async def operator_client(client, operator_user):
+    token = mint_token(operator_user.id, operator_user.username, operator_user.role)
+    client.headers["Authorization"] = f"Bearer {token}"
+    yield client
 
 
 # --------------------------------------------------------------------------
@@ -210,3 +249,15 @@ def build_alert(**overrides) -> Alert:
     )
     defaults.update(overrides)
     return Alert(**defaults)
+
+
+def build_user(**overrides) -> User:
+    n = _next()
+    defaults = dict(
+        username=f"user-{n}",
+        hashed_password="unused",  # never verified by mint_token -- direct JWT minting bypasses login
+        role=UserRole.OPERATOR,
+        is_active=True,
+    )
+    defaults.update(overrides)
+    return User(**defaults)

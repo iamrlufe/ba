@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user, require_admin_or_agent_key
 from app.core.db import get_db
 from app.core.ws_manager import manager
 from app.models.alert import Alert
@@ -40,7 +41,12 @@ def _as_naive_utc(dt: datetime) -> datetime:
     return dt
 
 
-@router.post("", response_model=JobRunRead, status_code=201)
+@router.post(
+    "",
+    response_model=JobRunRead,
+    status_code=201,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
 async def create_job_run(payload: JobRunCreate, session: AsyncSession = Depends(get_db)) -> JobRun:
     job = await get_or_404(session, BackupJob, payload.backup_job_id)
     if not job.is_enabled:
@@ -57,7 +63,7 @@ async def create_job_run(payload: JobRunCreate, session: AsyncSession = Depends(
     return run
 
 
-@router.get("", response_model=PaginatedResponse[JobRunRead])
+@router.get("", response_model=PaginatedResponse[JobRunRead], dependencies=[Depends(get_current_user)])
 async def list_job_runs(
     backup_job_id: int | None = None,
     status: JobRunStatus | None = None,
@@ -86,17 +92,23 @@ async def list_job_runs(
     )
 
 
-@router.get("/{job_run_id}", response_model=JobRunRead)
+@router.get("/{job_run_id}", response_model=JobRunRead, dependencies=[Depends(get_current_user)])
 async def get_job_run(job_run_id: int, session: AsyncSession = Depends(get_db)) -> JobRun:
     return await get_or_404(session, JobRun, job_run_id)
 
 
-@router.get("/{job_run_id}/log", response_model=JobRunLogRead)
+@router.get(
+    "/{job_run_id}/log", response_model=JobRunLogRead, dependencies=[Depends(get_current_user)]
+)
 async def get_job_run_log(job_run_id: int, session: AsyncSession = Depends(get_db)) -> JobRun:
     return await get_or_404(session, JobRun, job_run_id)
 
 
-@router.patch("/{job_run_id}", response_model=JobRunRead)
+@router.patch(
+    "/{job_run_id}",
+    response_model=JobRunRead,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
 async def update_job_run(
     job_run_id: int, payload: JobRunUpdate, session: AsyncSession = Depends(get_db)
 ) -> JobRun:
@@ -148,7 +160,11 @@ async def update_job_run(
     return run
 
 
-@router.post("/{job_run_id}/complete", response_model=JobRunRead)
+@router.post(
+    "/{job_run_id}/complete",
+    response_model=JobRunRead,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
 async def complete_job_run(
     job_run_id: int, payload: JobRunCompleteRequest, session: AsyncSession = Depends(get_db)
 ) -> JobRun:

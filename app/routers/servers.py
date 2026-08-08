@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.core.security import encrypt_secret
 from app.models.backup_job import BackupJob
-from app.models.enums import ServerStatus
+from app.models.enums import ServerStatus, UserRole
 from app.models.server import Server
 from app.routers._deps import get_or_404
 from app.schemas.common import PaginatedResponse
@@ -14,7 +15,12 @@ from app.schemas.server import ServerCreate, ServerRead, ServerUpdate
 router = APIRouter(tags=["servers"])
 
 
-@router.post("", response_model=ServerRead, status_code=201)
+@router.post(
+    "",
+    response_model=ServerRead,
+    status_code=201,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def create_server(payload: ServerCreate, session: AsyncSession = Depends(get_db)) -> Server:
     data = payload.model_dump(exclude={"username", "password", "ssh_private_key"})
     server = Server(**data)
@@ -31,7 +37,7 @@ async def create_server(payload: ServerCreate, session: AsyncSession = Depends(g
     return server
 
 
-@router.get("", response_model=PaginatedResponse[ServerRead])
+@router.get("", response_model=PaginatedResponse[ServerRead], dependencies=[Depends(get_current_user)])
 async def list_servers(
     status: ServerStatus | None = None,
     include_deleted: bool = False,
@@ -60,12 +66,16 @@ async def list_servers(
     )
 
 
-@router.get("/{server_id}", response_model=ServerRead)
+@router.get("/{server_id}", response_model=ServerRead, dependencies=[Depends(get_current_user)])
 async def get_server(server_id: int, session: AsyncSession = Depends(get_db)) -> Server:
     return await get_or_404(session, Server, server_id)
 
 
-@router.patch("/{server_id}", response_model=ServerRead)
+@router.patch(
+    "/{server_id}",
+    response_model=ServerRead,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def update_server(
     server_id: int, payload: ServerUpdate, session: AsyncSession = Depends(get_db)
 ) -> Server:
@@ -101,7 +111,11 @@ async def update_server(
     return server
 
 
-@router.delete("/{server_id}", status_code=204)
+@router.delete(
+    "/{server_id}",
+    status_code=204,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def delete_server(server_id: int, session: AsyncSession = Depends(get_db)) -> None:
     server = await get_or_404(session, Server, server_id)
     if server.is_deleted:

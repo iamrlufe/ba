@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.core.security import encrypt_secret
 from app.models.backup_job import BackupJob
-from app.models.enums import RestoreStatus, ServerStatus
+from app.models.enums import RestoreStatus, ServerStatus, UserRole
 from app.models.restore_operation import RestoreOperation
 from app.models.server import Server
 from app.models.sql_instance import SqlInstance
@@ -30,7 +31,12 @@ async def _check_server_reference(session: AsyncSession, server_id: int) -> None
         raise HTTPException(status_code=409, detail="Cannot reference a deleted server")
 
 
-@router.post("", response_model=SqlInstanceRead, status_code=201)
+@router.post(
+    "",
+    response_model=SqlInstanceRead,
+    status_code=201,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def create_sql_instance(
     payload: SqlInstanceCreate, session: AsyncSession = Depends(get_db)
 ) -> SqlInstance:
@@ -51,7 +57,9 @@ async def create_sql_instance(
     return instance
 
 
-@router.get("", response_model=PaginatedResponse[SqlInstanceRead])
+@router.get(
+    "", response_model=PaginatedResponse[SqlInstanceRead], dependencies=[Depends(get_current_user)]
+)
 async def list_sql_instances(
     status: ServerStatus | None = None,
     server_id: int | None = None,
@@ -83,12 +91,18 @@ async def list_sql_instances(
     )
 
 
-@router.get("/{sql_instance_id}", response_model=SqlInstanceRead)
+@router.get(
+    "/{sql_instance_id}", response_model=SqlInstanceRead, dependencies=[Depends(get_current_user)]
+)
 async def get_sql_instance(sql_instance_id: int, session: AsyncSession = Depends(get_db)) -> SqlInstance:
     return await get_or_404(session, SqlInstance, sql_instance_id)
 
 
-@router.patch("/{sql_instance_id}", response_model=SqlInstanceRead)
+@router.patch(
+    "/{sql_instance_id}",
+    response_model=SqlInstanceRead,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def update_sql_instance(
     sql_instance_id: int, payload: SqlInstanceUpdate, session: AsyncSession = Depends(get_db)
 ) -> SqlInstance:
@@ -123,7 +137,11 @@ async def update_sql_instance(
     return instance
 
 
-@router.delete("/{sql_instance_id}", status_code=204)
+@router.delete(
+    "/{sql_instance_id}",
+    status_code=204,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def delete_sql_instance(sql_instance_id: int, session: AsyncSession = Depends(get_db)) -> None:
     instance = await get_or_404(session, SqlInstance, sql_instance_id)
     if instance.is_deleted:

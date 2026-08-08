@@ -3,6 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import require_admin_or_agent_key
 from app.core.db import get_db
 from app.models.backup_job import BackupJob
 from app.models.backup_record import BackupRecord
@@ -13,7 +14,12 @@ from app.schemas.backup_record import BackupRecordCreate, BackupRecordRead
 router = APIRouter(tags=["backup-records"])
 
 
-@router.post("", response_model=BackupRecordRead, status_code=200)
+@router.post(
+    "",
+    response_model=BackupRecordRead,
+    status_code=200,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
 async def upsert_backup_record(
     payload: BackupRecordCreate, session: AsyncSession = Depends(get_db)
 ) -> BackupRecord:

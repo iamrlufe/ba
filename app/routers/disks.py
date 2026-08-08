@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.models.disk import Disk
+from app.models.enums import UserRole
 from app.models.server import Server
 from app.routers._deps import get_or_404
 from app.schemas.common import PaginatedResponse
@@ -12,7 +14,12 @@ from app.schemas.disk import DiskCreate, DiskRead, DiskUpdate
 router = APIRouter(tags=["disks"])
 
 
-@router.post("", response_model=DiskRead, status_code=201)
+@router.post(
+    "",
+    response_model=DiskRead,
+    status_code=201,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def create_disk(payload: DiskCreate, session: AsyncSession = Depends(get_db)) -> Disk:
     server = await get_or_404(session, Server, payload.server_id)
     if server.is_deleted:
@@ -25,7 +32,7 @@ async def create_disk(payload: DiskCreate, session: AsyncSession = Depends(get_d
     return disk
 
 
-@router.get("", response_model=PaginatedResponse[DiskRead])
+@router.get("", response_model=PaginatedResponse[DiskRead], dependencies=[Depends(get_current_user)])
 async def list_disks(
     server_id: int | None = None,
     is_active: bool | None = None,
@@ -54,12 +61,16 @@ async def list_disks(
     )
 
 
-@router.get("/{disk_id}", response_model=DiskRead)
+@router.get("/{disk_id}", response_model=DiskRead, dependencies=[Depends(get_current_user)])
 async def get_disk(disk_id: int, session: AsyncSession = Depends(get_db)) -> Disk:
     return await get_or_404(session, Disk, disk_id)
 
 
-@router.patch("/{disk_id}", response_model=DiskRead)
+@router.patch(
+    "/{disk_id}",
+    response_model=DiskRead,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def update_disk(disk_id: int, payload: DiskUpdate, session: AsyncSession = Depends(get_db)) -> Disk:
     disk = await get_or_404(session, Disk, disk_id)
 
@@ -73,7 +84,11 @@ async def update_disk(disk_id: int, payload: DiskUpdate, session: AsyncSession =
     return disk
 
 
-@router.delete("/{disk_id}", status_code=204)
+@router.delete(
+    "/{disk_id}",
+    status_code=204,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def delete_disk(disk_id: int, session: AsyncSession = Depends(get_db)) -> None:
     disk = await get_or_404(session, Disk, disk_id)
     # No manual pre-check: backup_jobs.disk_id is ON DELETE RESTRICT

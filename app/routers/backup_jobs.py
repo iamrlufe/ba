@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.models.backup_job import BackupJob
 from app.models.disk import Disk
-from app.models.enums import JobRunStatus
+from app.models.enums import JobRunStatus, UserRole
 from app.models.job_run import JobRun
 from app.models.server import Server
 from app.models.sql_instance import SqlInstance
@@ -16,7 +17,12 @@ from app.schemas.common import PaginatedResponse
 router = APIRouter(tags=["backup-jobs"])
 
 
-@router.post("", response_model=BackupJobRead, status_code=201)
+@router.post(
+    "",
+    response_model=BackupJobRead,
+    status_code=201,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def create_backup_job(payload: BackupJobCreate, session: AsyncSession = Depends(get_db)) -> BackupJob:
     server = await get_or_404(session, Server, payload.server_id)
     if server.is_deleted:
@@ -42,7 +48,9 @@ async def create_backup_job(payload: BackupJobCreate, session: AsyncSession = De
     return job
 
 
-@router.get("", response_model=PaginatedResponse[BackupJobRead])
+@router.get(
+    "", response_model=PaginatedResponse[BackupJobRead], dependencies=[Depends(get_current_user)]
+)
 async def list_backup_jobs(
     server_id: int | None = None,
     disk_id: int | None = None,
@@ -77,12 +85,18 @@ async def list_backup_jobs(
     )
 
 
-@router.get("/{backup_job_id}", response_model=BackupJobRead)
+@router.get(
+    "/{backup_job_id}", response_model=BackupJobRead, dependencies=[Depends(get_current_user)]
+)
 async def get_backup_job(backup_job_id: int, session: AsyncSession = Depends(get_db)) -> BackupJob:
     return await get_or_404(session, BackupJob, backup_job_id)
 
 
-@router.patch("/{backup_job_id}", response_model=BackupJobRead)
+@router.patch(
+    "/{backup_job_id}",
+    response_model=BackupJobRead,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def update_backup_job(
     backup_job_id: int, payload: BackupJobUpdate, session: AsyncSession = Depends(get_db)
 ) -> BackupJob:
@@ -105,7 +119,11 @@ async def update_backup_job(
     return job
 
 
-@router.delete("/{backup_job_id}", status_code=204)
+@router.delete(
+    "/{backup_job_id}",
+    status_code=204,
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
 async def delete_backup_job(backup_job_id: int, session: AsyncSession = Depends(get_db)) -> None:
     job = await get_or_404(session, BackupJob, backup_job_id)
 

@@ -18,9 +18,9 @@ async def _job(session):
     return job
 
 
-async def test_upsert_backup_record_creates_new(client, session):
+async def test_upsert_backup_record_creates_new(admin_client, session):
     job = await _job(session)
-    resp = await client.post(
+    resp = await admin_client.post(
         "/api/backup-records",
         json={
             "backup_job_id": job.id,
@@ -35,7 +35,7 @@ async def test_upsert_backup_record_creates_new(client, session):
     assert body["file_size_bytes"] == 2048
 
 
-async def test_upsert_backup_record_updates_existing_on_conflict(client, session):
+async def test_upsert_backup_record_updates_existing_on_conflict(admin_client, session):
     job = await _job(session)
     payload = {
         "backup_job_id": job.id,
@@ -43,12 +43,12 @@ async def test_upsert_backup_record_updates_existing_on_conflict(client, session
         "remote_path": "/remote/backup2.bak",
         "file_size_bytes": 1000,
     }
-    first = await client.post("/api/backup-records", json=payload)
+    first = await admin_client.post("/api/backup-records", json=payload)
     assert first.status_code == 200
     first_id = first.json()["id"]
     first_detected_at = first.json()["detected_at"]
 
-    second = await client.post(
+    second = await admin_client.post(
         "/api/backup-records", json={**payload, "file_size_bytes": 2000, "checksum": "abc", "checksum_algorithm": "sha256"}
     )
     assert second.status_code == 200
@@ -60,9 +60,9 @@ async def test_upsert_backup_record_updates_existing_on_conflict(client, session
     assert body["detected_at"] == first_detected_at
 
 
-async def test_upsert_backup_record_checksum_without_algorithm_is_422(client, session):
+async def test_upsert_backup_record_checksum_without_algorithm_is_422(admin_client, session):
     job = await _job(session)
-    resp = await client.post(
+    resp = await admin_client.post(
         "/api/backup-records",
         json={
             "backup_job_id": job.id,
@@ -75,8 +75,8 @@ async def test_upsert_backup_record_checksum_without_algorithm_is_422(client, se
     assert resp.status_code == 422
 
 
-async def test_upsert_backup_record_missing_backup_job_is_404(client):
-    resp = await client.post(
+async def test_upsert_backup_record_missing_backup_job_is_404(admin_client):
+    resp = await admin_client.post(
         "/api/backup-records",
         json={
             "backup_job_id": 999999,
@@ -88,14 +88,14 @@ async def test_upsert_backup_record_missing_backup_job_is_404(client):
     assert resp.status_code == 404
 
 
-async def test_upsert_backup_record_job_run_mismatch_is_422(client, session):
+async def test_upsert_backup_record_job_run_mismatch_is_422(admin_client, session):
     job = await _job(session)
     other_job = await _job(session)
     run = build_job_run(other_job.id, status=JobRunStatus.RUNNING)
     session.add(run)
     await session.commit()
 
-    resp = await client.post(
+    resp = await admin_client.post(
         "/api/backup-records",
         json={
             "backup_job_id": job.id,
@@ -108,9 +108,9 @@ async def test_upsert_backup_record_job_run_mismatch_is_422(client, session):
     assert resp.status_code == 422
 
 
-async def test_upsert_backup_record_missing_job_run_is_404(client, session):
+async def test_upsert_backup_record_missing_job_run_is_404(admin_client, session):
     job = await _job(session)
-    resp = await client.post(
+    resp = await admin_client.post(
         "/api/backup-records",
         json={
             "backup_job_id": job.id,
@@ -123,9 +123,9 @@ async def test_upsert_backup_record_missing_job_run_is_404(client, session):
     assert resp.status_code == 404
 
 
-async def test_upsert_backup_record_negative_size_is_422(client, session):
+async def test_upsert_backup_record_negative_size_is_422(admin_client, session):
     job = await _job(session)
-    resp = await client.post(
+    resp = await admin_client.post(
         "/api/backup-records",
         json={
             "backup_job_id": job.id,
