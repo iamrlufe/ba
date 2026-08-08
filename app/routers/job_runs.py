@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user, require_admin_or_agent_key
 from app.core.db import get_db
+from app.core.timeutils import as_naive_utc as _as_naive_utc
 from app.core.ws_manager import manager
 from app.models.alert import Alert
 from app.models.backup_job import BackupJob
@@ -24,21 +25,6 @@ from app.schemas.job_run import (
 )
 
 router = APIRouter(tags=["job-runs"])
-
-
-def _as_naive_utc(dt: datetime) -> datetime:
-    """Normalize a datetime for arithmetic against SQLite-round-tripped values.
-
-    SQLite has no native timezone-aware datetime type: even though the ORM
-    columns are declared `DateTime(timezone=True)`, values read back after
-    a round trip through the DB come back tz-naive, while freshly
-    constructed Python datetimes (e.g. `datetime.now(UTC)`) are
-    tz-aware. Subtracting a naive and an aware datetime raises `TypeError`,
-    so both operands are normalized to naive UTC before arithmetic here.
-    """
-    if dt.tzinfo is not None:
-        return dt.astimezone(UTC).replace(tzinfo=None)
-    return dt
 
 
 @router.post(

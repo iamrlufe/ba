@@ -16,6 +16,7 @@ class ServerStatus(str, Enum):
     ACTIVE = "ACTIVE"
     DISABLED = "DISABLED"
     UNREACHABLE = "UNREACHABLE"
+    OFFLINE = "OFFLINE"
 
 
 class BackupType(str, Enum):
@@ -32,6 +33,7 @@ class JobRunStatus(str, Enum):
     WARNING = "WARNING"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    TIMEOUT = "TIMEOUT"
 
 
 class VerificationStatus(str, Enum):
@@ -44,10 +46,12 @@ class VerificationStatus(str, Enum):
 class AlertType(str, Enum):
     JOB_FAILED = "JOB_FAILED"
     JOB_MISSED = "JOB_MISSED"
+    JOB_TIMEOUT = "JOB_TIMEOUT"
     VERIFICATION_FAILED = "VERIFICATION_FAILED"
     DISK_SPACE_LOW = "DISK_SPACE_LOW"
     DISK_SPACE_CRITICAL = "DISK_SPACE_CRITICAL"
     SERVER_UNREACHABLE = "SERVER_UNREACHABLE"
+    AGENT_OFFLINE = "AGENT_OFFLINE"
     RESTORE_FAILED = "RESTORE_FAILED"
 
 
@@ -97,7 +101,13 @@ class UserRole(str, Enum):
 # validators (app/schemas/job_run.py, app/schemas/restore_operation.py). ---
 
 JOB_RUN_TERMINAL_STATUSES = frozenset(
-    {JobRunStatus.SUCCESS, JobRunStatus.FAILED, JobRunStatus.WARNING, JobRunStatus.CANCELLED}
+    {
+        JobRunStatus.SUCCESS,
+        JobRunStatus.FAILED,
+        JobRunStatus.WARNING,
+        JobRunStatus.CANCELLED,
+        JobRunStatus.TIMEOUT,
+    }
 )
 
 RESTORE_TERMINAL_STATUSES = frozenset(

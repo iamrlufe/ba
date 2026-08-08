@@ -47,6 +47,31 @@ class Settings(BaseSettings):
     # provisioning/rotation in this pass) -- deliberately simple.
     AGENT_API_KEY: str
 
+    # How often (seconds) the background alert-detection worker
+    # (app/workers/alert_worker.py) runs its three periodic checks (missed
+    # runs, agent-offline, job timeouts). Independent of the once-daily
+    # summary cadence below.
+    ALERT_WORKER_TICK_INTERVAL_SECONDS: int = 300
+
+    # Whether the background alert-detection worker loop is started at all
+    # (see app/main.py lifespan). Set to False to run the API with no
+    # background task (e.g. a secondary/read replica process).
+    ALERT_WORKER_ENABLED: bool = True
+
+    # Minutes of Server.last_seen_at staleness before the worker marks a
+    # server OFFLINE and raises an AGENT_OFFLINE alert. Distinct from the
+    # per-job missed_run_grace_minutes column, which governs JOB_MISSED
+    # detection instead (see app/models/backup_job.py).
+    AGENT_OFFLINE_THRESHOLD_MINUTES: int = 10
+
+    # Hour/minute (UTC, 24h) at which the worker builds and logs the
+    # once-daily alert/job-status summary (app/workers/daily_summary.py).
+    # GET /api/summary/daily always computes a fresh snapshot on demand
+    # regardless of this schedule -- these only gate the worker's own
+    # once-a-day background invocation.
+    DAILY_SUMMARY_HOUR_UTC: int = 8
+    DAILY_SUMMARY_MINUTE_UTC: int = 0
+
 
 @lru_cache
 def get_settings() -> Settings:

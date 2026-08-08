@@ -4,6 +4,8 @@ Wires together the DB engine lifecycle, the global IntegrityError -> 409
 handler, the in-memory JobRun WebSocket connection manager, the
 bootstrap-admin startup step, and every resource router.
 """
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -30,8 +32,12 @@ from app.routers import (
     restore_operations,
     servers,
     sql_instances,
+    summary,
     users,
 )
+from app.workers.alert_worker import alert_worker_loop
+
+_alert_worker_task: asyncio.Task | None = None
 
 
 async def _bootstrap_admin() -> None:
@@ -64,7 +70,19 @@ async def _bootstrap_admin() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _bootstrap_admin()
+
+    global _alert_worker_task
+    if settings.ALERT_WORKER_ENABLED:
+        _alert_worker_task = asyncio.create_task(alert_worker_loop(async_session_maker))
+
     yield
+
+    if _alert_worker_task is not None:
+        _alert_worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _alert_worker_task
+        _alert_worker_task = None
+
     await engine.dispose()
 
 
@@ -88,4 +106,5 @@ app.include_router(job_runs.router, prefix="/api/job-runs")
 app.include_router(backup_records.router, prefix="/api/backup-records")
 app.include_router(restore_operations.router, prefix="/api/restore-operations")
 app.include_router(alerts.router, prefix="/api/alerts")
+app.include_router(summary.router, prefix="/api/summary")
 app.include_router(job_run_ws.router)

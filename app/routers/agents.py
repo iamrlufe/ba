@@ -47,6 +47,23 @@ async def agent_heartbeat(
     alerts_raised: list[Alert] = []
     alerts_resolved: list[Alert] = []
 
+    # Any heartbeat -- regardless of the `reachable` payload field --
+    # proves the agent process is alive, so it always clears AGENT_OFFLINE
+    # (set by the background worker on last_seen_at staleness; see
+    # app/workers/alert_worker.py::check_agent_offline). Resolved here
+    # (not by the worker on a later tick) to avoid up to
+    # ALERT_WORKER_TICK_INTERVAL_SECONDS of lag before the alert clears
+    # after the agent actually recovers.
+    resolved_offline = await resolve_active_alert(
+        session,
+        alert_type=AlertType.AGENT_OFFLINE,
+        entity_type="server",
+        entity_column=Alert.server_id,
+        entity_id=server_id,
+    )
+    if resolved_offline is not None:
+        alerts_resolved.append(resolved_offline)
+
     if payload.reachable is False:
         alert = await raise_alert_if_absent(
             session,

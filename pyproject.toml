@@ -19,6 +19,8 @@ dependencies = [
     "pyjwt>=2.10",
     "passlib[bcrypt]>=1.7.4",
     "bcrypt==4.0.1",
+    "croniter>=2.0",
+    "tzdata>=2024.1",
 ]
 
 [tool.uv]
