@@ -38,6 +38,7 @@ from app.models import (
     Server,
     SqlInstance,
     User,
+    VerificationRun,
 )
 from app.models.base import Base
 from app.models.enums import (
@@ -249,6 +250,12 @@ def build_alert(**overrides) -> Alert:
     )
     defaults.update(overrides)
     return Alert(**defaults)
+
+
+def build_verification_run(backup_job_id: int, **overrides) -> VerificationRun:
+    defaults: dict = dict(backup_job_id=backup_job_id, triggered_by="scheduler")
+    defaults.update(overrides)
+    return VerificationRun(**defaults)
 
 
 def build_user(**overrides) -> User:

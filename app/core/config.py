@@ -89,6 +89,37 @@ class Settings(BaseSettings):
     # mitigation and must not be told to users as one.
     BOT_TOKEN_EXPIRE_MINUTES: int = 43200  # 30 days
 
+    # Whether the background alert-detection worker (via
+    # _maybe_run_backup_verifications) drives SQL Server backup
+    # verification at all (app/workers/backup_verification.py). Does NOT
+    # gate POST /api/backup-jobs/{id}/verify, which always runs on demand
+    # regardless of this flag -- mirrors the DAILY_SUMMARY_* /
+    # GET /api/summary/daily split above.
+    BACKUP_VERIFICATION_ENABLED: bool = True
+
+    # How often (seconds) the background worker sweeps every enabled,
+    # sql_instance_id-set BackupJob and runs a verification
+    # (check_backup_verifications). Deliberately a long, once-a-day-ish
+    # default -- RESTORE VERIFYONLY is expensive on the SQL Server side.
+    BACKUP_VERIFICATION_INTERVAL_SECONDS: int = 86400
+
+    # Timeout (seconds) for establishing the SQL Server connection used for
+    # both the msdb.dbo.backupset query and RESTORE VERIFYONLY (see
+    # app/core/sql_client.py::SqlConnectionParams.connect_timeout_seconds).
+    BACKUP_VERIFICATION_CONNECT_TIMEOUT_SECONDS: int = 30
+
+    # Timeout (seconds) for the RESTORE VERIFYONLY statement itself --
+    # can legitimately take a long time for large backup files.
+    BACKUP_VERIFICATION_RESTORE_TIMEOUT_SECONDS: int = 1800
+
+    # Extra grace period (seconds), on top of
+    # BACKUP_VERIFICATION_CONNECT_TIMEOUT_SECONDS +
+    # BACKUP_VERIFICATION_RESTORE_TIMEOUT_SECONDS, before
+    # check_stuck_verifications forcibly marks a RUNNING VerificationRun as
+    # ERROR (process crash/restart mid-verification -- see that function's
+    # docstring in app/workers/backup_verification.py).
+    BACKUP_VERIFICATION_STUCK_RUN_GRACE_SECONDS: int = 900
+
 
 @lru_cache
 def get_settings() -> Settings:

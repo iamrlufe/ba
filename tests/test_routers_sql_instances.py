@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.core.security import decrypt_secret
-from app.models.enums import JobRunStatus, RequestChannel, RestoreMode, RestoreStatus
+from app.models.enums import JobRunStatus, RequestChannel, RestoreMode, RestoreStatus, VerificationRunStatus
 from tests.conftest import (
     build_backup_job,
     build_backup_record,
@@ -10,6 +10,7 @@ from tests.conftest import (
     build_restore_operation,
     build_server,
     build_sql_instance,
+    build_verification_run,
 )
 
 
@@ -182,3 +183,62 @@ async def test_delete_sql_instance_soft_deletes(admin_client, session):
 async def test_delete_sql_instance_404(admin_client):
     resp = await admin_client.delete("/api/sql-instances/999999")
     assert resp.status_code == 404
+
+
+async def test_delete_sql_instance_with_active_verification_run_is_409(admin_client, session):
+    server = build_server()
+    session.add(server)
+    await session.commit()
+    disk = build_disk(server.id)
+    session.add(disk)
+    await session.commit()
+    instance = build_sql_instance()
+    session.add(instance)
+    await session.commit()
+    # BackupJob referencing this instance must be disabled, otherwise the
+    # earlier (enabled-job) guard would 409 first and this test wouldn't
+    # actually exercise the VerificationRun-specific guard.
+    job = build_backup_job(
+        server.id,
+        disk.id,
+        sql_instance_id=instance.id,
+        verification_method="RESTORE_VERIFY",
+        database_name="orders",
+        is_enabled=False,
+    )
+    session.add(job)
+    await session.commit()
+    run = build_verification_run(job.id, sql_instance_id=instance.id, status=VerificationRunStatus.RUNNING)
+    session.add(run)
+    await session.commit()
+
+    resp = await admin_client.delete(f"/api/sql-instances/{instance.id}")
+    assert resp.status_code == 409
+
+
+async def test_delete_sql_instance_with_terminal_verification_run_succeeds(admin_client, session):
+    server = build_server()
+    session.add(server)
+    await session.commit()
+    disk = build_disk(server.id)
+    session.add(disk)
+    await session.commit()
+    instance = build_sql_instance()
+    session.add(instance)
+    await session.commit()
+    job = build_backup_job(
+        server.id,
+        disk.id,
+        sql_instance_id=instance.id,
+        verification_method="RESTORE_VERIFY",
+        database_name="orders",
+        is_enabled=False,
+    )
+    session.add(job)
+    await session.commit()
+    run = build_verification_run(job.id, sql_instance_id=instance.id, status=VerificationRunStatus.OK)
+    session.add(run)
+    await session.commit()
+
+    resp = await admin_client.delete(f"/api/sql-instances/{instance.id}")
+    assert resp.status_code == 204

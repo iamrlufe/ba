@@ -63,3 +63,6 @@ class BackupRecord(Base):
     restore_operations: Mapped[list["RestoreOperation"]] = relationship(
         "RestoreOperation", back_populates="backup_record"
     )
+    verification_runs: Mapped[list["VerificationRun"]] = relationship(
+        "VerificationRun", back_populates="backup_record"
+    )

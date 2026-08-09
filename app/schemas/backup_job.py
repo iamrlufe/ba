@@ -28,12 +28,18 @@ class BackupJobCreate(BackupJobBase):
     is_enabled: bool = True
 
     @model_validator(mode="after")
-    def _verification_method_required_when_verifying(self) -> "BackupJobCreate":
-        if self.sql_instance_id is not None and self.verification_method is None:
-            raise ValueError(
-                "verification_method is required when sql_instance_id is set "
-                "(verification is enabled iff sql_instance_id is set)"
-            )
+    def _verification_fields_required_when_verifying(self) -> "BackupJobCreate":
+        if self.sql_instance_id is not None:
+            if self.verification_method is None:
+                raise ValueError(
+                    "verification_method is required when sql_instance_id is set "
+                    "(verification is enabled iff sql_instance_id is set)"
+                )
+            if not self.database_name:
+                raise ValueError(
+                    "database_name is required when sql_instance_id is set -- "
+                    "needed to query msdb.dbo.backupset for verification"
+                )
         return self
 
 

@@ -54,6 +54,9 @@ class SqlInstance(TimestampMixin, Base):
     restore_operations: Mapped[list["RestoreOperation"]] = relationship(
         "RestoreOperation", back_populates="sql_instance"
     )
+    verification_runs: Mapped[list["VerificationRun"]] = relationship(
+        "VerificationRun", back_populates="sql_instance"
+    )
 
     @hybrid_property
     def credentials_set(self) -> bool:

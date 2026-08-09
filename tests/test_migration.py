@@ -28,6 +28,7 @@ EXPECTED_TABLES = {
     "backup_records",
     "restore_operations",
     "alerts",
+    "verification_runs",
     "alembic_version",
 }
 
@@ -35,6 +36,7 @@ EXPECTED_PARTIAL_INDEXES = {
     "uq_job_runs_active_per_backup_job",
     "uq_restore_operations_active_per_instance_db",
     "uq_alerts_active_dedupe",
+    "uq_verification_runs_active_per_backup_job",
 }
 
 

@@ -77,6 +77,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
+    { name = "python-tds" },
     { name = "sqlalchemy" },
     { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
@@ -106,6 +107,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pyjwt", specifier = ">=2.10" },
+    { name = "python-tds", specifier = ">=1.15" },
     { name = "sqlalchemy", specifier = ">=2.0.36" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
@@ -790,6 +792,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/82/ed/0301aeeac3e5353ef3d94b6ec08bbcabd04a72018415dcb29e588514bba8/python_dotenv-1.2.2.tar.gz", hash = "sha256:2c371a91fbd7ba082c2c1dc1f8bf89ca22564a087c2c287cd9b662adde799cf3", size = 50135, upload-time = "2026-03-01T16:00:26.196Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/d7/1959b9648791274998a9c3526f6d0ec8fd2233e4d4acce81bbae76b44b2a/python_dotenv-1.2.2-py3-none-any.whl", hash = "sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a", size = 22101, upload-time = "2026-03-01T16:00:25.09Z" },
+]
+
+[[package]]
+name = "python-tds"
+version = "1.17.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ae/8a/cf778bd80d142d4b3c39f9879485e2e93e4ace2ae9aabae77e07e8117f41/python_tds-1.17.1.tar.gz", hash = "sha256:c97483a9adf1dcab8bee66e83429acc502753f389d134553edd818348b94ced0", size = 82208, upload-time = "2025-09-13T12:57:37.909Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bf/8f/c7344075a9ea4458e5d52cf2e16dc7e70777807c96ba9d429f16f27b1acc/python_tds-1.17.1-py3-none-any.whl", hash = "sha256:35cb210b1a54e5ccc91570a83d4e9a2a16682cbeb00bede06fd6cdf9afa9762f", size = 86635, upload-time = "2025-09-13T12:57:36.877Z" },
 ]
 
 [[package]]

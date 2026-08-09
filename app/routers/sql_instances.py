@@ -6,10 +6,11 @@ from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.core.security import encrypt_secret
 from app.models.backup_job import BackupJob
-from app.models.enums import RestoreStatus, ServerStatus, UserRole
+from app.models.enums import RestoreStatus, ServerStatus, UserRole, VerificationRunStatus
 from app.models.restore_operation import RestoreOperation
 from app.models.server import Server
 from app.models.sql_instance import SqlInstance
+from app.models.verification_run import VerificationRun
 from app.routers._deps import get_or_404
 from app.schemas.common import PaginatedResponse
 from app.schemas.sql_instance import SqlInstanceCreate, SqlInstanceRead, SqlInstanceUpdate
@@ -166,6 +167,17 @@ async def delete_sql_instance(sql_instance_id: int, session: AsyncSession = Depe
         raise HTTPException(
             status_code=409,
             detail="Cannot delete sql instance: it has active RestoreOperation(s) referencing it",
+        )
+
+    active_verification_runs_stmt = select(func.count()).select_from(VerificationRun).where(
+        VerificationRun.sql_instance_id == sql_instance_id,
+        VerificationRun.status.in_((VerificationRunStatus.PENDING, VerificationRunStatus.RUNNING)),
+    )
+    active_verification_runs = (await session.execute(active_verification_runs_stmt)).scalar_one()
+    if active_verification_runs > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete sql instance: it has active VerificationRun(s) referencing it",
         )
 
     instance.is_deleted = True

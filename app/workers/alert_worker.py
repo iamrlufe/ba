@@ -32,6 +32,7 @@ from app.models.job_run import JobRun
 from app.models.server import Server
 from app.routers._alerts import get_active_alert, raise_alert_if_absent, resolve_active_alert
 from app.schemas.job_run import JobRunRead
+from app.workers.backup_verification import check_backup_verifications, check_stuck_verifications
 from app.workers.daily_summary import build_daily_summary
 
 logger = logging.getLogger(__name__)
@@ -268,12 +269,20 @@ async def check_job_timeouts(
 @dataclass
 class _WorkerState:
     last_daily_summary_date: date | None = None
+    last_backup_verification_at: datetime | None = None
+    last_stuck_verification_check_at: datetime | None = None
 
 
 async def _run_periodic_checks(session_maker: async_sessionmaker[AsyncSession]) -> None:
     await check_missed_runs(session_maker)
     await check_agent_offline(session_maker)
     await check_job_timeouts(session_maker)
+    # Cheap (one indexed query) and needs to catch stuck runs reasonably
+    # promptly, so it runs on the regular tick cadence unconditionally,
+    # like the three checks above -- NOT gated behind
+    # BACKUP_VERIFICATION_INTERVAL_SECONDS (see
+    # app.workers.backup_verification.check_stuck_verifications docstring).
+    await check_stuck_verifications(session_maker)
 
 
 async def _maybe_run_daily_summary(
@@ -290,12 +299,30 @@ async def _maybe_run_daily_summary(
     state.last_daily_summary_date = today
 
 
+async def _maybe_run_backup_verifications(
+    session_maker: async_sessionmaker[AsyncSession], state: _WorkerState, *, now: datetime | None = None
+) -> None:
+    now = now or datetime.now(UTC)
+    if not settings.BACKUP_VERIFICATION_ENABLED:
+        return
+    due = (
+        state.last_backup_verification_at is None
+        or (now - state.last_backup_verification_at).total_seconds()
+        >= settings.BACKUP_VERIFICATION_INTERVAL_SECONDS
+    )
+    if not due:
+        return
+    await check_backup_verifications(session_maker, now=now)
+    state.last_backup_verification_at = now
+
+
 async def alert_worker_loop(
     session_maker: async_sessionmaker[AsyncSession], *, stop_event: asyncio.Event | None = None
 ) -> None:
     """Runs forever until `stop_event` is set (or the task is cancelled):
     every settings.ALERT_WORKER_TICK_INTERVAL_SECONDS, runs the three
-    periodic checks, then (if due) the daily summary. Intended to be
+    periodic checks (plus check_stuck_verifications), then (if due) the
+    daily summary and the backup-verification sweep. Intended to be
     wrapped in asyncio.create_task() from app.main.lifespan -- never call
     directly from request-handling code. A single tick's exception is
     caught and logged, not propagated, so one bad tick never kills the
@@ -306,6 +333,7 @@ async def alert_worker_loop(
         try:
             await _run_periodic_checks(session_maker)
             await _maybe_run_daily_summary(session_maker, state)
+            await _maybe_run_backup_verifications(session_maker, state)
         except Exception:
             logger.exception("alert worker tick failed; will retry next tick")
         await asyncio.sleep(settings.ALERT_WORKER_TICK_INTERVAL_SECONDS)

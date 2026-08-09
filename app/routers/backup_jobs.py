@@ -1,18 +1,28 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user, require_role
-from app.core.db import get_db
+from app.core.db import async_session_maker, get_db
 from app.models.backup_job import BackupJob
 from app.models.disk import Disk
-from app.models.enums import JobRunStatus, UserRole
+from app.models.enums import JobRunStatus, UserRole, VerificationRunStatus
 from app.models.job_run import JobRun
 from app.models.server import Server
 from app.models.sql_instance import SqlInstance
+from app.models.user import User
+from app.models.verification_run import VerificationRun
 from app.routers._deps import get_or_404
 from app.schemas.backup_job import BackupJobCreate, BackupJobRead, BackupJobUpdate
 from app.schemas.common import PaginatedResponse
+from app.schemas.verification_run import VerificationRunRead
+from app.workers.backup_verification import (
+    _track_background_task,
+    create_pending_verification_run,
+    execute_verification_run,
+)
 
 router = APIRouter(tags=["backup-jobs"])
 
@@ -113,6 +123,12 @@ async def update_backup_job(
             status_code=409,
             detail="verification_method is required when sql_instance_id is set",
         )
+    if job.sql_instance_id is not None and not job.database_name:
+        raise HTTPException(
+            status_code=409,
+            detail="database_name is required when sql_instance_id is set -- "
+            "needed to query msdb.dbo.backupset for verification",
+        )
 
     await session.commit()
     await session.refresh(job)
@@ -138,6 +154,17 @@ async def delete_backup_job(backup_job_id: int, session: AsyncSession = Depends(
             detail="Cannot delete backup job: it has PENDING/RUNNING JobRun(s)",
         )
 
+    active_verification_runs_stmt = select(func.count()).select_from(VerificationRun).where(
+        VerificationRun.backup_job_id == backup_job_id,
+        VerificationRun.status.in_((VerificationRunStatus.PENDING, VerificationRunStatus.RUNNING)),
+    )
+    active_verification_runs = (await session.execute(active_verification_runs_stmt)).scalar_one()
+    if active_verification_runs > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete backup job: it has PENDING/RUNNING VerificationRun(s)",
+        )
+
     # No further manual pre-check: if any BackupRecord of this job ever had
     # a RestoreOperation (RESTRICT, not limited to active ones), the
     # cascade delete of backup_records will fail and the whole transaction
@@ -145,3 +172,95 @@ async def delete_backup_job(backup_job_id: int, session: AsyncSession = Depends(
     await session.delete(job)
     await session.commit()
     return None
+
+
+@router.post(
+    "/{backup_job_id}/verify",
+    response_model=VerificationRunRead,
+    status_code=202,
+)
+async def verify_backup_job(
+    backup_job_id: int,
+    session: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+) -> VerificationRun:
+    job = await get_or_404(session, BackupJob, backup_job_id)
+    if job.sql_instance_id is None:
+        raise HTTPException(
+            status_code=409, detail="verification is not enabled for this job"
+        )
+
+    # Deliberately no local try/except around the INSERT: if there is
+    # already an active (PENDING/RUNNING) verification run for this
+    # backup_job_id, the partial unique index raises IntegrityError on
+    # commit, which the global handler converts to 409.
+    run = await create_pending_verification_run(
+        session, backup_job_id, triggered_by=current_user.username
+    )
+    await session.commit()
+    await session.refresh(run)
+
+    task = asyncio.create_task(execute_verification_run(async_session_maker, run.id))
+    _track_background_task(task)
+
+    return run
+
+
+@router.get(
+    "/{backup_job_id}/verification-runs",
+    response_model=PaginatedResponse[VerificationRunRead],
+    # ADMIN-only, not get_current_user: VerificationRun.error_message can
+    # contain a SQL Server driver's verbatim login-failure text (e.g. "Login
+    # failed for user 'svc_backup_verify'"), which echoes the SqlInstance's
+    # SQL login name -- SqlInstanceRead already treats that as admin-only
+    # information (only a `credentials_set` boolean is exposed to non-admins
+    # on the SqlInstance endpoints themselves); this endpoint must not open
+    # a side channel to the same information for OPERATOR-role users.
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
+async def list_backup_job_verification_runs(
+    backup_job_id: int,
+    status: VerificationRunStatus | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_db),
+) -> PaginatedResponse[VerificationRunRead]:
+    await get_or_404(session, BackupJob, backup_job_id)
+
+    filters = [VerificationRun.backup_job_id == backup_job_id]
+    if status is not None:
+        filters.append(VerificationRun.status == status)
+
+    total_stmt = select(func.count()).select_from(VerificationRun).where(*filters)
+    items_stmt = (
+        select(VerificationRun)
+        .where(*filters)
+        .order_by(VerificationRun.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    total = (await session.execute(total_stmt)).scalar_one()
+    items = (await session.execute(items_stmt)).scalars().all()
+
+    return PaginatedResponse[VerificationRunRead](
+        items=[VerificationRunRead.model_validate(r) for r in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/{backup_job_id}/verification-runs/{run_id}",
+    response_model=VerificationRunRead,
+    # ADMIN-only -- same reasoning as list_backup_job_verification_runs above.
+    dependencies=[Depends(require_role(UserRole.ADMIN))],
+)
+async def get_backup_job_verification_run(
+    backup_job_id: int, run_id: int, session: AsyncSession = Depends(get_db)
+) -> VerificationRun:
+    run = await get_or_404(session, VerificationRun, run_id)
+    if run.backup_job_id != backup_job_id:
+        raise HTTPException(status_code=404, detail=f"VerificationRun {run_id} not found")
+    return run

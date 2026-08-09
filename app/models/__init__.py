@@ -12,6 +12,7 @@ from app.models.backup_job import BackupJob
 from app.models.job_run import JobRun
 from app.models.backup_record import BackupRecord
 from app.models.restore_operation import RestoreOperation
+from app.models.verification_run import VerificationRun
 from app.models.alert import Alert
 from app.models.user import User
 
@@ -24,6 +25,7 @@ __all__ = [
     "JobRun",
     "BackupRecord",
     "RestoreOperation",
+    "VerificationRun",
     "Alert",
     "User",
 ]

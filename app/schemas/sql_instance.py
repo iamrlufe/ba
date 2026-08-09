@@ -31,6 +31,20 @@ class SqlInstanceCreate(SqlInstanceBase):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _port_and_instance_name_mutually_exclusive(self) -> "SqlInstanceCreate":
+        # app/core/sql_client.py's connection builder (backup verification)
+        # silently drops `port` whenever `instance_name` is set, because the
+        # underlying driver raises if both are passed together -- catch this
+        # at write time instead of leaving a configured port silently
+        # ignored at connect time with no error anywhere.
+        if self.port is not None and self.instance_name is not None:
+            raise ValueError(
+                "port and instance_name cannot both be set -- a named instance "
+                "resolves its own port via SQL Browser; specify one or the other"
+            )
+        return self
+
 
 class SqlInstanceUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
@@ -46,6 +60,19 @@ class SqlInstanceUpdate(BaseModel):
     # ServerUpdate -- see app.schemas.server.ServerUpdate docstring.
     username: str | None = None
     password: str | None = None
+
+    @model_validator(mode="after")
+    def _port_and_instance_name_mutually_exclusive(self) -> "SqlInstanceUpdate":
+        # Only catches both being set together IN THIS SAME payload -- it
+        # cannot see a value already stored from a previous request (Pydantic
+        # schemas are stateless). Same rationale as SqlInstanceCreate's
+        # identical check.
+        if self.port is not None and self.instance_name is not None:
+            raise ValueError(
+                "port and instance_name cannot both be set -- a named instance "
+                "resolves its own port via SQL Browser; specify one or the other"
+            )
+        return self
 
 
 class SqlInstanceRead(SqlInstanceBase):

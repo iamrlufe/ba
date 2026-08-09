@@ -47,7 +47,12 @@ class AlertType(str, Enum):
     JOB_FAILED = "JOB_FAILED"
     JOB_MISSED = "JOB_MISSED"
     JOB_TIMEOUT = "JOB_TIMEOUT"
+    # NOTE: VERIFICATION_FAILED is reserved for a different, unrelated
+    # concept -- JobRun.verification_status, agent-self-reported -- and is
+    # untouched by app/workers/backup_verification.py. That module raises
+    # BACKUP_VERIFICATION_FAILED instead; do not conflate the two.
     VERIFICATION_FAILED = "VERIFICATION_FAILED"
+    BACKUP_VERIFICATION_FAILED = "BACKUP_VERIFICATION_FAILED"
     DISK_SPACE_LOW = "DISK_SPACE_LOW"
     DISK_SPACE_CRITICAL = "DISK_SPACE_CRITICAL"
     SERVER_UNREACHABLE = "SERVER_UNREACHABLE"
@@ -92,6 +97,15 @@ class RequestChannel(str, Enum):
     TELEGRAM = "TELEGRAM"
 
 
+class VerificationRunStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    OK = "OK"
+    CORRUPT = "CORRUPT"
+    MISSING = "MISSING"
+    ERROR = "ERROR"
+
+
 class UserRole(str, Enum):
     ADMIN = "ADMIN"
     OPERATOR = "OPERATOR"
@@ -112,4 +126,13 @@ JOB_RUN_TERMINAL_STATUSES = frozenset(
 
 RESTORE_TERMINAL_STATUSES = frozenset(
     {RestoreStatus.DONE, RestoreStatus.FAILED, RestoreStatus.CANCELLED}
+)
+
+VERIFICATION_RUN_TERMINAL_STATUSES = frozenset(
+    {
+        VerificationRunStatus.OK,
+        VerificationRunStatus.CORRUPT,
+        VerificationRunStatus.MISSING,
+        VerificationRunStatus.ERROR,
+    }
 )

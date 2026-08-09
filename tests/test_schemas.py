@@ -25,7 +25,7 @@ from app.schemas.job_run import is_valid_transition as job_run_is_valid_transiti
 from app.schemas.restore_operation import RestoreOperationCreate, RestoreOperationUpdate
 from app.schemas.restore_operation import is_valid_transition as restore_is_valid_transition
 from app.schemas.server import ServerCreate, ServerRead
-from app.schemas.sql_instance import SqlInstanceRead
+from app.schemas.sql_instance import SqlInstanceCreate, SqlInstanceRead, SqlInstanceUpdate
 from tests.conftest import build_server, build_sql_instance
 
 
@@ -166,6 +166,62 @@ def test_disk_create_accepts_valid_thresholds():
 
 
 # --------------------------------------------------------------------------
+# SqlInstanceCreate / SqlInstanceUpdate: port and instance_name are
+# mutually exclusive (both set together must be rejected).
+# --------------------------------------------------------------------------
+
+
+def test_sql_instance_create_rejects_port_and_instance_name_together():
+    with pytest.raises(ValidationError):
+        SqlInstanceCreate(
+            name="sql-1",
+            host="10.0.0.1",
+            port=1433,
+            instance_name="SQLEXPRESS",
+            use_windows_auth=True,
+        )
+
+
+def test_sql_instance_create_allows_port_alone():
+    instance = SqlInstanceCreate(
+        name="sql-1", host="10.0.0.1", port=1433, instance_name=None, use_windows_auth=True
+    )
+    assert instance.port == 1433
+    assert instance.instance_name is None
+
+
+def test_sql_instance_create_allows_instance_name_alone():
+    instance = SqlInstanceCreate(
+        name="sql-1", host="10.0.0.1", port=None, instance_name="SQLEXPRESS", use_windows_auth=True
+    )
+    assert instance.instance_name == "SQLEXPRESS"
+    assert instance.port is None
+
+
+def test_sql_instance_update_rejects_port_and_instance_name_together():
+    with pytest.raises(ValidationError):
+        SqlInstanceUpdate(port=1433, instance_name="SQLEXPRESS")
+
+
+def test_sql_instance_update_allows_port_alone():
+    update = SqlInstanceUpdate(port=1433)
+    assert update.port == 1433
+    assert update.instance_name is None
+
+
+def test_sql_instance_update_allows_instance_name_alone():
+    update = SqlInstanceUpdate(instance_name="SQLEXPRESS")
+    assert update.instance_name == "SQLEXPRESS"
+    assert update.port is None
+
+
+def test_sql_instance_update_allows_neither_set():
+    update = SqlInstanceUpdate()
+    assert update.port is None
+    assert update.instance_name is None
+
+
+# --------------------------------------------------------------------------
 # BackupJobCreate: verification_method required when sql_instance_id is set
 # --------------------------------------------------------------------------
 
@@ -204,8 +260,23 @@ def test_backup_job_create_allows_sql_instance_with_verification_method():
         disk_id=1,
         sql_instance_id=5,
         verification_method="RESTORE_VERIFY",
+        database_name="orders",
     )
     assert job.sql_instance_id == 5
+
+
+def test_backup_job_create_requires_database_name_with_sql_instance():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(
+            name="job1",
+            source_path="/src",
+            schedule_cron="* * * * *",
+            server_id=1,
+            disk_id=1,
+            sql_instance_id=5,
+            verification_method="RESTORE_VERIFY",
+            database_name=None,
+        )
 
 
 # --------------------------------------------------------------------------

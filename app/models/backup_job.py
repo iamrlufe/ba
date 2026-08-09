@@ -79,3 +79,6 @@ class BackupJob(TimestampMixin, Base):
     backup_records: Mapped[list["BackupRecord"]] = relationship(
         "BackupRecord", back_populates="backup_job", cascade="all, delete-orphan"
     )
+    verification_runs: Mapped[list["VerificationRun"]] = relationship(
+        "VerificationRun", back_populates="backup_job", cascade="all, delete-orphan"
+    )
