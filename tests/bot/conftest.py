@@ -1,12 +1,12 @@
 """Shared fixtures for the `bot/` test suite.
 
 CRITICAL ORDERING NOTE: `bot/config.py` does `settings = get_bot_settings()`
-at *module import time*, and `BotSettings` has two required fields with no
-defaults (`TELEGRAM_BOT_TOKEN`, `FERNET_KEY`). There is no committed
-`bot/.env`. That means the very first `import bot...` anywhere in this
-test process will raise a pydantic `ValidationError` unless
-`TELEGRAM_BOT_TOKEN`/`FERNET_KEY` are already present in `os.environ`
-*before* that import happens.
+at *module import time*, and `BotSettings` has three required fields with no
+defaults (`TELEGRAM_BOT_TOKEN`, `FERNET_KEY`, `BOT_ALLOWED_CHAT_IDS`). There
+is no committed `bot/.env`. That means the very first `import bot...`
+anywhere in this test process will raise a pydantic `ValidationError`
+unless all three are already present in `os.environ` *before* that import
+happens.
 
 pytest loads a directory's `conftest.py` before collecting sibling test
 modules in that same directory, so setting these env vars here -- as plain
@@ -22,6 +22,10 @@ from cryptography.fernet import Fernet
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123456:TEST-TELEGRAM-BOT-TOKEN")
 os.environ.setdefault("FERNET_KEY", Fernet.generate_key().decode("utf-8"))
+# 555 matches this file's `make_update` fixture's default `chat_id` and the
+# `linked_user` fixture's `chat_id`, so existing tests that don't care about
+# the allowlist keep passing unmodified.
+os.environ.setdefault("BOT_ALLOWED_CHAT_IDS", "555,-100999")
 
 import time  # noqa: E402
 from types import SimpleNamespace  # noqa: E402

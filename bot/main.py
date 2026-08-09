@@ -19,6 +19,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -30,6 +31,7 @@ from bot.handlers import link as link_handlers
 from bot.handlers import restore as restore_handlers
 from bot.handlers import status as status_handlers
 from bot.logging_config import configure_logging
+from bot.middleware import allowlist_gate
 from bot.poller import ApiClientFactory, alert_poll_loop
 
 logger = logging.getLogger(__name__)
@@ -53,16 +55,6 @@ def build_api_client_factory(transport: httpx.AsyncBaseTransport | None = None) 
     return factory
 
 
-def _allowed_chat_filter() -> filters.BaseFilter:
-    """BOT_ALLOWED_CHAT_IDS unset (the default) -> every chat is allowed.
-    If set, every command/message handler below is additionally gated on
-    this comma-separated allowlist of Telegram chat ids."""
-    if not settings.BOT_ALLOWED_CHAT_IDS:
-        return filters.ALL
-    chat_ids = [int(x.strip()) for x in settings.BOT_ALLOWED_CHAT_IDS.split(",") if x.strip()]
-    return filters.Chat(chat_id=chat_ids)
-
-
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Wired via `Application.add_error_handler` so a bug in any single
     handler can never crash the whole polling loop. Logs the full
@@ -81,23 +73,27 @@ def build_application(*, transport: httpx.AsyncBaseTransport | None = None) -> A
     application.bot_data["api_client_factory"] = factory
     application.bot_data["auth_store"] = auth_store
 
-    chat_filter = _allowed_chat_filter()
+    # Mandatory transport-level gate: runs in an earlier handler group (-1)
+    # than every handler below (all in the default group 0), so a
+    # disallowed chat's update is stopped here and never reaches any of
+    # them -- see bot/middleware.py's module docstring.
+    application.add_handler(TypeHandler(Update, allowlist_gate), group=-1)
 
-    application.add_handler(CommandHandler("start", link_handlers.start, filters=chat_filter))
-    application.add_handler(CommandHandler("help", link_handlers.help_command, filters=chat_filter))
-    application.add_handler(CommandHandler("link", link_handlers.link, filters=chat_filter))
-    application.add_handler(CommandHandler("status", status_handlers.status, filters=chat_filter))
-    application.add_handler(CommandHandler("alerts", alerts_handlers.alerts, filters=chat_filter))
-    application.add_handler(CommandHandler("ack", alerts_handlers.ack, filters=chat_filter))
-    application.add_handler(CommandHandler("resolve", alerts_handlers.resolve, filters=chat_filter))
-    application.add_handler(CommandHandler("restore", restore_handlers.restore, filters=chat_filter))
-    application.add_handler(CommandHandler("cancel", restore_handlers.cancel, filters=chat_filter))
+    application.add_handler(CommandHandler("start", link_handlers.start))
+    application.add_handler(CommandHandler("help", link_handlers.help_command))
+    application.add_handler(CommandHandler("link", link_handlers.link))
+    application.add_handler(CommandHandler("status", status_handlers.status))
+    application.add_handler(CommandHandler("alerts", alerts_handlers.alerts))
+    application.add_handler(CommandHandler("ack", alerts_handlers.ack))
+    application.add_handler(CommandHandler("resolve", alerts_handlers.resolve))
+    application.add_handler(CommandHandler("restore", restore_handlers.restore))
+    application.add_handler(CommandHandler("cancel", restore_handlers.cancel))
     # Plain-text confirmation replies -- registered after every
     # CommandHandler, in the same (default) handler group, so command
     # handlers always take priority. Only acts when a pending restore
     # exists for the chat (see bot/handlers/restore.py::confirm_restore).
     application.add_handler(
-        MessageHandler(chat_filter & filters.TEXT & ~filters.COMMAND, restore_handlers.confirm_restore)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, restore_handlers.confirm_restore)
     )
 
     application.add_error_handler(_on_error)

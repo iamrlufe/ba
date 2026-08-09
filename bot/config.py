@@ -8,6 +8,7 @@ e.g. `JWT_SECRET_KEY`/`AGENT_API_KEY`, widening its trust boundary).
 """
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,11 +57,38 @@ class BotSettings(BaseSettings):
     # pending /restore is auto-cancelled.
     BOT_RESTORE_CONFIRMATION_MAX_ATTEMPTS: int = 3
 
-    # Optional comma-separated allowlist of Telegram chat ids permitted to
-    # interact with this bot at all (e.g. "123456789,-100987654321"). Unset
-    # (None) by default -- every chat is allowed; only tighten this if the
-    # bot token itself might be exposed to untrusted chats.
-    BOT_ALLOWED_CHAT_IDS: str | None = None
+    # REQUIRED, no default -- fail fast at startup rather than silently
+    # allowing every chat. Comma-separated allowlist of Telegram chat ids
+    # permitted to interact with this bot at all (e.g.
+    # "123456789,-100987654321"). See bot/README.md for how to find a
+    # chat's id.
+    BOT_ALLOWED_CHAT_IDS: str
+
+    @field_validator("BOT_ALLOWED_CHAT_IDS")
+    @classmethod
+    def _validate_allowed_chat_ids(cls, v: str) -> str:
+        tokens = v.split(",")
+        if any(t.strip() == "" for t in tokens):
+            raise ValueError(
+                "BOT_ALLOWED_CHAT_IDS must be a non-empty comma-separated list of "
+                "Telegram chat ids (e.g. '123456789,-100987654321'); got an empty "
+                "or whitespace-only value."
+            )
+        for t in tokens:
+            stripped = t.strip()
+            try:
+                int(stripped)
+            except ValueError:
+                raise ValueError(
+                    f"BOT_ALLOWED_CHAT_IDS contains a non-integer chat id: {stripped!r}. "
+                    "Every entry must be a valid Telegram chat id (an integer, e.g. "
+                    "'123456789' for a private chat or '-100987654321' for a group)."
+                ) from None
+        return v
+
+    @property
+    def allowed_chat_ids(self) -> frozenset[int]:
+        return frozenset(int(t.strip()) for t in self.BOT_ALLOWED_CHAT_IDS.split(","))
 
     BOT_LOG_LEVEL: str = "INFO"
 
