@@ -39,6 +39,7 @@ class SqlConnectionParams:
 class MsdbBackupInfo:
     backup_finish_date: datetime | None
     is_damaged: bool
+    physical_device_name: str | None
 
 
 @dataclass(frozen=True)
@@ -139,9 +140,12 @@ class _PytdsSqlClient:
             # VERIFYONLY path below): pytds substitutes `database_name` as
             # a bound parameter, never via string formatting here.
             cursor.execute(
-                "SELECT TOP 1 backup_finish_date, is_damaged "
-                "FROM msdb.dbo.backupset WHERE database_name = %s "
-                "ORDER BY backup_finish_date DESC",
+                "SELECT TOP 1 bs.backup_finish_date, bs.is_damaged, bmf.physical_device_name "
+                "FROM msdb.dbo.backupset bs "
+                "LEFT JOIN msdb.dbo.backupmediafamily bmf "
+                "ON bmf.media_set_id = bs.media_set_id "
+                "WHERE bs.database_name = %s "
+                "ORDER BY bs.backup_finish_date DESC, bmf.family_sequence_number ASC",
                 (database_name,),
             )
             row = cursor.fetchone()
@@ -150,10 +154,11 @@ class _PytdsSqlClient:
 
         if row is None:
             return None
-        backup_finish_date, is_damaged = row[0], row[1]
+        backup_finish_date, is_damaged, physical_device_name = row[0], row[1], row[2]
         return MsdbBackupInfo(
             backup_finish_date=backup_finish_date,
             is_damaged=bool(is_damaged),
+            physical_device_name=physical_device_name,
         )
 
     def _set_query_timeout(self, timeout_seconds: int) -> None:

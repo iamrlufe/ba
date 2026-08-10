@@ -269,6 +269,38 @@ async def execute_verification_run(
                         msdb_backup_date = msdb_info.backup_finish_date
                         msdb_is_damaged = msdb_info.is_damaged
 
+                    # Soft, informational-only consistency check -- see the
+                    # column comment on app.models.backup_job.BackupJob
+                    # .local_backup_path_pattern. status/error_message/
+                    # msdb_backup_date/msdb_is_damaged are already fully
+                    # decided by the classification chain above at this
+                    # point; this block must NEVER touch them (or alerting
+                    # in Step 5) -- it only ever appends a note to the local
+                    # verifyonly_output variable, which Step 4 persists
+                    # as-is.
+                    if (
+                        job.local_backup_path_pattern
+                        and msdb_info is not None
+                        and msdb_info.physical_device_name
+                    ):
+                        normalized_pattern = job.local_backup_path_pattern.strip().rstrip(
+                            "\\/"
+                        ).lower()
+                        normalized_physical = msdb_info.physical_device_name.strip().lower()
+                        if normalized_pattern and normalized_pattern not in normalized_physical:
+                            note = (
+                                f"local_backup_path_pattern mismatch: configured pattern "
+                                f"{job.local_backup_path_pattern!r} was not found in the "
+                                f"physical_device_name reported by msdb.dbo.backupmediafamily "
+                                f"({msdb_info.physical_device_name!r}). Informational only -- "
+                                f"does not affect verification status, msdb_is_damaged, or alerting."
+                            )
+                            verifyonly_output = (
+                                note
+                                if verifyonly_output is None
+                                else f"{verifyonly_output}\n{note}"
+                            )
+
             # Step 4: CAS-guarded terminal update.
             terminal_result = await session.execute(
                 update(VerificationRun)

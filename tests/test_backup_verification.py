@@ -104,12 +104,16 @@ def _factory_raising(exc: Exception, calls: list | None = None):
 _OK_VERIFY = VerifyOnlyResult(succeeded=True, output="verify ok", error_message=None, error_number=None)
 
 
-def _damaged_info() -> MsdbBackupInfo:
-    return MsdbBackupInfo(backup_finish_date=NOW, is_damaged=True)
+def _damaged_info(physical_device_name: str | None = None) -> MsdbBackupInfo:
+    return MsdbBackupInfo(
+        backup_finish_date=NOW, is_damaged=True, physical_device_name=physical_device_name
+    )
 
 
-def _clean_info() -> MsdbBackupInfo:
-    return MsdbBackupInfo(backup_finish_date=NOW, is_damaged=False)
+def _clean_info(physical_device_name: str | None = None) -> MsdbBackupInfo:
+    return MsdbBackupInfo(
+        backup_finish_date=NOW, is_damaged=False, physical_device_name=physical_device_name
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +326,244 @@ async def test_execute_verification_run_never_raises_on_exotic_factory_exception
 async def test_execute_verification_run_missing_run_returns_none(session_maker):
     run = await execute_verification_run(session_maker, 999999, now=NOW)
     assert run is None
+
+
+# ---------------------------------------------------------------------------
+# local_backup_path_pattern soft-compare
+# ---------------------------------------------------------------------------
+
+
+async def test_local_backup_path_pattern_match_appends_no_note(session, session_maker):
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern=r"\\fileserver\backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(
+        backupset=_clean_info(physical_device_name=r"\\fileserver\backups\nightly.bak"),
+        verify_result=_OK_VERIFY,
+    )
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.status == VerificationRunStatus.OK
+    assert run.verifyonly_output == _OK_VERIFY.output
+
+
+async def test_local_backup_path_pattern_mismatch_ok_run_appends_note_status_unaffected(
+    session, session_maker
+):
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern=r"\\otherserver\backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(
+        backupset=_clean_info(physical_device_name=r"\\fileserver\backups\nightly.bak"),
+        verify_result=_OK_VERIFY,
+    )
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.status == VerificationRunStatus.OK
+    assert run.error_message is None
+    assert "local_backup_path_pattern mismatch" in run.verifyonly_output
+    assert _OK_VERIFY.output in run.verifyonly_output  # appended, not replaced
+
+
+async def test_local_backup_path_pattern_mismatch_corrupt_run_appends_note(session, session_maker):
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern=r"\\otherserver\backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(
+        backupset=_damaged_info(physical_device_name=r"\\fileserver\backups\nightly.bak"),
+        verify_result=_OK_VERIFY,
+    )
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.status == VerificationRunStatus.CORRUPT
+    assert run.msdb_is_damaged is True
+    assert run.error_message == "msdb.dbo.backupset.is_damaged=1 for the latest backup"
+    assert "local_backup_path_pattern mismatch" in run.verifyonly_output
+
+    async with session_maker() as s:
+        alert = (
+            await s.execute(
+                select(Alert).where(
+                    Alert.alert_type == AlertType.BACKUP_VERIFICATION_FAILED,
+                    Alert.backup_job_id == job.id,
+                )
+            )
+        ).scalar_one()
+    assert alert.severity == AlertSeverity.CRITICAL
+
+
+async def test_local_backup_path_pattern_unset_never_appends_note(session, session_maker):
+    job, _instance, _record = await _job_with_instance(session)
+    assert job.local_backup_path_pattern is None
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(
+        backupset=_clean_info(physical_device_name=r"\\totally\unrelated\path.bak"),
+        verify_result=_OK_VERIFY,
+    )
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.verifyonly_output == _OK_VERIFY.output
+
+
+async def test_local_backup_path_pattern_set_but_physical_device_name_none_no_note(
+    session, session_maker
+):
+    """physical_device_name is None when the LEFT JOIN to backupmediafamily
+    misses -- the soft-compare must be skipped entirely, not treated as a
+    mismatch."""
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern=r"\\fileserver\backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(backupset=_clean_info(physical_device_name=None), verify_result=_OK_VERIFY)
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.verifyonly_output == _OK_VERIFY.output
+
+
+async def test_local_backup_path_pattern_set_but_run_missing_no_note(session, session_maker):
+    job, _instance, _record = await _job_with_instance(
+        session, with_record=False, local_backup_path_pattern=r"\\fileserver\backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    calls: list = []
+    factory = _factory_raising(AssertionError("factory should never be called"), calls)
+
+    run = await execute_verification_run(session_maker, run_id, sql_client_factory=factory, now=NOW)
+
+    assert run.status == VerificationRunStatus.MISSING
+    assert run.verifyonly_output is None
+
+
+async def test_local_backup_path_pattern_set_but_connect_fails_no_note(session, session_maker):
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern=r"\\fileserver\backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    factory = _factory_raising(TimeoutError("connection timed out"))
+    run = await execute_verification_run(session_maker, run_id, sql_client_factory=factory, now=NOW)
+
+    assert run.status == VerificationRunStatus.ERROR
+    assert run.verifyonly_output is None
+
+
+async def test_local_backup_path_pattern_case_insensitive_match_no_note(session, session_maker):
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern=r"\\FileServer\Backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(
+        backupset=_clean_info(physical_device_name=r"\\fileserver\backups\nightly.bak"),
+        verify_result=_OK_VERIFY,
+    )
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.verifyonly_output == _OK_VERIFY.output
+
+
+async def test_local_backup_path_pattern_trailing_slash_normalized_match_no_note(
+    session, session_maker
+):
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern="\\\\fileserver\\backups\\"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(
+        backupset=_clean_info(physical_device_name=r"\\fileserver\backups\nightly.bak"),
+        verify_result=_OK_VERIFY,
+    )
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.verifyonly_output == _OK_VERIFY.output
+
+
+async def test_local_backup_path_pattern_mid_path_substring_match_no_note(session, session_maker):
+    """Containment semantics, not startswith -- a pattern matching mid-path
+    (not anchored to the start) still counts as a match."""
+    job, _instance, _record = await _job_with_instance(session, local_backup_path_pattern="backups")
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(
+        backupset=_clean_info(physical_device_name=r"\\fileserver\backups\nightly.bak"),
+        verify_result=_OK_VERIFY,
+    )
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.verifyonly_output == _OK_VERIFY.output
+
+
+async def test_local_backup_path_pattern_mismatch_on_verify_failure_appends_note(
+    session, session_maker
+):
+    """Third eligible branch (`not verify_result.succeeded`, CORRUPT/ERROR via
+    error-number classification) -- the note must still be appended, and
+    status/error_message must remain driven only by the verify failure, not
+    by the pattern mismatch."""
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern=r"\\otherserver\backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(
+        backupset=_clean_info(physical_device_name=r"\\fileserver\backups\nightly.bak"),
+        verify_result=VerifyOnlyResult(
+            succeeded=False, output=None, error_message="checksum mismatch", error_number=3013
+        ),
+    )
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.status == VerificationRunStatus.CORRUPT
+    assert run.error_message == "checksum mismatch"
+    assert "local_backup_path_pattern mismatch" in run.verifyonly_output
+
+
+async def test_local_backup_path_pattern_set_but_no_msdb_row_no_note(session, session_maker):
+    """MISSING via `msdb_info is None` (BackupRecord exists, but no
+    msdb.dbo.backupset row) -- distinct from the `with_record=False` MISSING
+    path already covered above. The soft-compare guard must exclude this
+    branch too, since there is no physical_device_name to compare against."""
+    job, _instance, _record = await _job_with_instance(
+        session, local_backup_path_pattern=r"\\fileserver\backups"
+    )
+    run_id = await _pending_run_id(session_maker, job.id)
+
+    client = FakeSqlClient(backupset=None)
+    run = await execute_verification_run(
+        session_maker, run_id, sql_client_factory=_factory_for(client), now=NOW
+    )
+
+    assert run.status == VerificationRunStatus.MISSING
+    assert run.verifyonly_output is None
 
 
 # ---------------------------------------------------------------------------

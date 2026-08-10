@@ -67,6 +67,14 @@ class BackupJob(TimestampMixin, Base):
     )
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Soft, informational consistency check only -- NOT the primary
+    # path-resolution mechanism for RESTORE VERIFYONLY (that resolves the
+    # actual disk path via msdb.dbo.backupmediafamily.physical_device_name,
+    # see app/workers/backup_verification.py). If set, a mismatch between
+    # this pattern and the physical_device_name SQL Server actually reports
+    # is only ever noted in VerificationRun.verifyonly_output -- never
+    # affects status/severity/alerting.
+    local_backup_path_pattern: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     server: Mapped["Server"] = relationship("Server", back_populates="backup_jobs")
     disk: Mapped["Disk"] = relationship("Disk", back_populates="backup_jobs")

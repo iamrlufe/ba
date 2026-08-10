@@ -155,12 +155,16 @@ def test_get_latest_backupset_returns_info_on_row():
     from datetime import UTC, datetime
 
     finish_date = datetime(2026, 1, 15, 3, 0, tzinfo=UTC)
-    cursor = FakeCursor(fetchone_result=(finish_date, 0))
+    cursor = FakeCursor(fetchone_result=(finish_date, 0, r"\\fileserver\backups$\orders.bak"))
     client = _PytdsSqlClient(FakeConnection(cursor))
 
     info = client.get_latest_backupset("orders")
 
-    assert info == MsdbBackupInfo(backup_finish_date=finish_date, is_damaged=False)
+    assert info == MsdbBackupInfo(
+        backup_finish_date=finish_date,
+        is_damaged=False,
+        physical_device_name=r"\\fileserver\backups$\orders.bak",
+    )
     assert cursor.closed is True
 
 
@@ -173,11 +177,31 @@ def test_get_latest_backupset_returns_none_when_no_row():
 
 
 def test_get_latest_backupset_is_damaged_true():
-    cursor = FakeCursor(fetchone_result=(None, 1))
+    cursor = FakeCursor(fetchone_result=(None, 1, None))
     client = _PytdsSqlClient(FakeConnection(cursor))
 
     info = client.get_latest_backupset("orders")
     assert info.is_damaged is True
+
+
+def test_get_latest_backupset_returns_physical_device_name_from_row():
+    cursor = FakeCursor(fetchone_result=(None, 0, r"D:\backups\orders.bak"))
+    client = _PytdsSqlClient(FakeConnection(cursor))
+
+    info = client.get_latest_backupset("orders")
+    assert info.physical_device_name == r"D:\backups\orders.bak"
+
+
+def test_get_latest_backupset_physical_device_name_none_on_left_join_miss():
+    """A backupmediafamily row may not exist even though the backupset row
+    does (LEFT JOIN miss) -- physical_device_name must be None, not raise,
+    and the backupset row must still be returned (not treated as MISSING)."""
+    cursor = FakeCursor(fetchone_result=(None, 0, None))
+    client = _PytdsSqlClient(FakeConnection(cursor))
+
+    info = client.get_latest_backupset("orders")
+    assert info is not None
+    assert info.physical_device_name is None
 
 
 def test_get_latest_backupset_uses_parameterized_query_not_string_interpolation():
@@ -191,6 +215,20 @@ def test_get_latest_backupset_uses_parameterized_query_not_string_interpolation(
     assert "%s" in sql
     assert "orders'; DROP TABLE x --" not in sql  # never interpolated into the SQL text
     assert params == ("orders'; DROP TABLE x --",)  # passed as a bound parameter instead
+
+
+def test_get_latest_backupset_sql_joins_backupmediafamily():
+    """Regression guard: the LEFT JOIN to backupmediafamily (needed to
+    resolve physical_device_name) must not be dropped in a future edit."""
+    cursor = FakeCursor(fetchone_result=None)
+    client = _PytdsSqlClient(FakeConnection(cursor))
+
+    client.get_latest_backupset("orders")
+
+    sql, _params = cursor.executed[0]
+    assert "backupmediafamily" in sql
+    assert "media_set_id" in sql
+    assert "family_sequence_number" in sql
 
 
 def test_get_latest_backupset_closes_cursor_even_on_execute_error():

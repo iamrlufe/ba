@@ -19,6 +19,11 @@ class BackupJobBase(BaseModel):
     verification_method: str | None = Field(default=None, max_length=50)
     expected_max_duration_minutes: int | None = Field(default=None, gt=0)
     missed_run_grace_minutes: int = Field(default=60, gt=0)
+    # Soft, informational consistency check only -- independent of
+    # sql_instance_id (not part of _verification_fields_required_when_verifying
+    # below). See app/models/backup_job.py column comment /
+    # app/workers/backup_verification.py for how a mismatch is surfaced.
+    local_backup_path_pattern: str | None = Field(default=None, max_length=500)
 
 
 class BackupJobCreate(BackupJobBase):
@@ -57,6 +62,7 @@ class BackupJobUpdate(BaseModel):
     verification_method: str | None = Field(default=None, max_length=50)
     expected_max_duration_minutes: int | None = Field(default=None, gt=0)
     missed_run_grace_minutes: int | None = Field(default=None, gt=0)
+    local_backup_path_pattern: str | None = Field(default=None, max_length=500)
     is_enabled: bool | None = None
 
     # sql_instance_id follows the "exclude_unset" pattern: if the key is
