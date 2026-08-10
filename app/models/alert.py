@@ -9,52 +9,58 @@ from app.models.enums import AlertChannel, AlertSeverity, AlertStatus, AlertType
 # Kept in sync (by hand) with alembic/versions/0001_initial_schema.py.
 _ACTIVE_ALERT_WHERE = "status = 'ACTIVE'"
 
-# `entity_key` collapses the five nullable per-entity FK columns into a
+# `entity_key` collapses the six nullable per-entity FK columns into a
 # single non-null(-ish) discriminant for uniqueness purposes. This is
 # required because SQL NULL is never equal to NULL for UNIQUE index
-# purposes: since any given row only ever has ONE of the five FK columns
-# set (the other four are always NULL by design -- see class docstring),
-# a naive composite UNIQUE index over all five FK columns would never
+# purposes: since any given row only ever has ONE of the six FK columns
+# set (the other five are always NULL by design -- see class docstring),
+# a naive composite UNIQUE index over all six FK columns would never
 # actually detect duplicates (each row differs from every other row in at
-# least 4 always-NULL columns). Kept in sync (by hand) with
-# alembic/versions/0001_initial_schema.py.
-_ENTITY_KEY_SQL = "COALESCE(server_id, disk_id, backup_job_id, job_run_id, restore_operation_id)"
+# least 5 always-NULL columns). Kept in sync (by hand) with
+# alembic/versions/0001_initial_schema.py / 0008_ftp_copy_integrity.py.
+_ENTITY_KEY_SQL = (
+    "COALESCE(server_id, disk_id, backup_job_id, job_run_id, restore_operation_id, backup_record_id)"
+)
 
 _AT_MOST_ONE_ENTITY_FK_SQL = (
     "(CASE WHEN server_id IS NOT NULL THEN 1 ELSE 0 END) + "
     "(CASE WHEN disk_id IS NOT NULL THEN 1 ELSE 0 END) + "
     "(CASE WHEN backup_job_id IS NOT NULL THEN 1 ELSE 0 END) + "
     "(CASE WHEN job_run_id IS NOT NULL THEN 1 ELSE 0 END) + "
-    "(CASE WHEN restore_operation_id IS NOT NULL THEN 1 ELSE 0 END) <= 1"
+    "(CASE WHEN restore_operation_id IS NOT NULL THEN 1 ELSE 0 END) + "
+    "(CASE WHEN backup_record_id IS NOT NULL THEN 1 ELSE 0 END) <= 1"
 )
 
 
 class Alert(TimestampMixin, Base):
-    """A monitoring alert, linked to at most one entity via one of five FKs.
+    """A monitoring alert, linked to at most one entity via one of six FKs.
 
     Multi-FK (not polymorphic entity_type+entity_id) by design: gives real
     FK integrity/cascade behavior per entity type at the cost of a few
-    always-null columns. All five FKs use ON DELETE SET NULL (never
+    always-null columns. All six FKs use ON DELETE SET NULL (never
     CASCADE) -- an Alert must never disappear just because its parent
     entity was deleted; it should instead end up with all FKs NULL and get
     resolved through the normal alert lifecycle.
 
-    Because of ON DELETE SET NULL, "all five FKs NULL" is a legitimate
+    Because of ON DELETE SET NULL, "all six FKs NULL" is a legitimate
     state (parent entity deleted), so the CHECK constraint below enforces
     "at most one" FK set, not "exactly one".
 
     KNOWN LIMITATION (by design, not a bug): the `at_most_one_entity_fk`
-    CHECK constraint only enforces that *at most one* of the five FK
+    CHECK constraint only enforces that *at most one* of the six FK
     columns is non-NULL -- it does NOT verify that the one FK column which
     *is* set actually corresponds to `entity_type`. For example, a row
     with `entity_type='disk'` but `server_id` set (and `disk_id` NULL)
     will pass the CHECK constraint even though it's semantically wrong.
-    SQLite CHECK constraints cannot express this "if entity_type=X then
-    only column_X may be non-NULL" correlation without hardcoding every
-    column name into the CHECK expression in a way that's brittle to
-    maintain by hand; instead this consistency is guaranteed entirely by
-    always going through the creation helper described below, never by
-    inserting/updating rows ad hoc.
+    Same for `entity_type='backup_record'` (6th case of the same
+    limitation): a row could have `backup_job_id` set instead of
+    `backup_record_id` and still pass. SQLite CHECK constraints cannot
+    express this "if entity_type=X then only column_X may be non-NULL"
+    correlation without hardcoding every column name into the CHECK
+    expression in a way that's brittle to maintain by hand; instead this
+    consistency is guaranteed entirely by always going through the
+    creation helper described below, never by inserting/updating rows ad
+    hoc.
 
     TODO(CRUD layer, out of scope here): Alert rows must always be created
     through a single helper function that sets exactly one FK column based
@@ -68,13 +74,13 @@ class Alert(TimestampMixin, Base):
 
     De-duplication of ACTIVE alerts is done via the generated column
     `entity_key` (see `_ENTITY_KEY_SQL` above) rather than a composite
-    unique index directly over the five FK columns -- a straight
+    unique index directly over the six FK columns -- a straight
     multi-column UNIQUE index over `(server_id, disk_id, backup_job_id,
-    job_run_id, restore_operation_id, ...)` would never fire, because SQL
-    NULL is never considered equal to NULL for UNIQUE purposes and at
-    least four of those five columns are always NULL on every row.
-    `entity_key` collapses them into one non-NULL discriminant via
-    COALESCE so the partial unique index `uq_alerts_active_dedupe` on
+    job_run_id, restore_operation_id, backup_record_id, ...)` would never
+    fire, because SQL NULL is never considered equal to NULL for UNIQUE
+    purposes and at least five of those six columns are always NULL on
+    every row. `entity_key` collapses them into one non-NULL discriminant
+    via COALESCE so the partial unique index `uq_alerts_active_dedupe` on
     `(entity_type, entity_key, alert_type) WHERE status='ACTIVE'` can
     actually detect duplicates.
     """
@@ -88,9 +94,10 @@ class Alert(TimestampMixin, Base):
         Index("ix_alerts_backup_job_id", "backup_job_id"),
         Index("ix_alerts_job_run_id", "job_run_id"),
         Index("ix_alerts_restore_operation_id", "restore_operation_id"),
+        Index("ix_alerts_backup_record_id", "backup_record_id"),
         Index("ix_alerts_status_severity", "status", "severity"),
         CheckConstraint(
-            "entity_type IN ('server','disk','backup_job','job_run','restore_operation')",
+            "entity_type IN ('server','disk','backup_job','job_run','restore_operation','backup_record')",
             name="entity_type_valid",
         ),
         CheckConstraint(_AT_MOST_ONE_ENTITY_FK_SQL, name="at_most_one_entity_fk"),
@@ -134,6 +141,9 @@ class Alert(TimestampMixin, Base):
     restore_operation_id: Mapped[int | None] = mapped_column(
         ForeignKey("restore_operations.id", ondelete="SET NULL"), nullable=True
     )
+    backup_record_id: Mapped[int | None] = mapped_column(
+        ForeignKey("backup_records.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Generated (computed) column, not settable by application code -- see
     # `_ENTITY_KEY_SQL` / class docstring. Backs the `uq_alerts_active_dedupe`
@@ -168,3 +178,4 @@ class Alert(TimestampMixin, Base):
     backup_job: Mapped["BackupJob | None"] = relationship("BackupJob")
     job_run: Mapped["JobRun | None"] = relationship("JobRun")
     restore_operation: Mapped["RestoreOperation | None"] = relationship("RestoreOperation")
+    backup_record: Mapped["BackupRecord | None"] = relationship("BackupRecord")

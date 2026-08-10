@@ -11,7 +11,16 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models.enums import AlertSeverity, AlertStatus, AlertType, JobRunStatus, RestoreStatus
+from app.models.enums import (
+    AlertSeverity,
+    AlertStatus,
+    AlertType,
+    JobRunStatus,
+    RestoreStatus,
+    VerificationRunStatus,
+    VerificationType,
+)
+from app.models.verification_run import VerificationRun
 from tests.conftest import (
     build_alert,
     build_backup_job,
@@ -21,6 +30,7 @@ from tests.conftest import (
     build_restore_operation,
     build_server,
     build_sql_instance,
+    build_verification_run,
 )
 
 
@@ -346,3 +356,182 @@ async def test_alert_with_zero_entity_fks_set_is_allowed(session):
     session.add(alert)
     await session.commit()
     assert alert.id is not None
+
+
+# --------------------------------------------------------------------------
+# FTP copy-integrity: Alert.backup_record_id (6th entity FK) + entity_key/
+# uq_alerts_active_dedupe coverage, VerificationRun.verification_type.
+# --------------------------------------------------------------------------
+
+
+async def test_alert_with_backup_record_and_another_entity_fk_set_is_rejected(session):
+    _, _, job = await _server_disk_job(session)
+    record = build_backup_record(job.id)
+    session.add(record)
+    await session.commit()
+
+    with pytest.raises(IntegrityError):
+        alert = build_alert(
+            entity_type="backup_record", backup_record_id=record.id, backup_job_id=job.id
+        )
+        session.add(alert)
+        await session.commit()
+    await session.rollback()
+
+
+async def test_alert_with_only_backup_record_fk_set_is_allowed(session):
+    _, _, job = await _server_disk_job(session)
+    record = build_backup_record(job.id)
+    session.add(record)
+    await session.commit()
+
+    alert = build_alert(entity_type="backup_record", backup_record_id=record.id)
+    session.add(alert)
+    await session.commit()
+    assert alert.id is not None
+
+
+async def test_second_active_alert_for_same_backup_record_is_rejected(session):
+    _, _, job = await _server_disk_job(session)
+    record = build_backup_record(job.id)
+    session.add(record)
+    await session.commit()
+
+    alert1 = build_alert(
+        entity_type="backup_record",
+        backup_record_id=record.id,
+        alert_type=AlertType.FTP_COPY_INTEGRITY_FAILED,
+        status=AlertStatus.ACTIVE,
+    )
+    session.add(alert1)
+    await session.commit()
+
+    alert2 = build_alert(
+        entity_type="backup_record",
+        backup_record_id=record.id,
+        alert_type=AlertType.FTP_COPY_INTEGRITY_FAILED,
+        status=AlertStatus.ACTIVE,
+    )
+    session.add(alert2)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+async def test_active_alerts_for_different_backup_records_are_allowed(session):
+    """Regression test for the entity_key generated-column fix, specific
+    to the new 6th FK column: two ACTIVE alerts sharing the same
+    entity_type/alert_type but pointing at *different* backup_record_id
+    values must not be treated as duplicates."""
+    _, _, job = await _server_disk_job(session)
+    record1 = build_backup_record(job.id)
+    record2 = build_backup_record(job.id)
+    session.add_all([record1, record2])
+    await session.commit()
+
+    alert1 = build_alert(
+        entity_type="backup_record",
+        backup_record_id=record1.id,
+        alert_type=AlertType.FTP_COPY_INTEGRITY_FAILED,
+        status=AlertStatus.ACTIVE,
+    )
+    alert2 = build_alert(
+        entity_type="backup_record",
+        backup_record_id=record2.id,
+        alert_type=AlertType.FTP_COPY_INTEGRITY_FAILED,
+        status=AlertStatus.ACTIVE,
+    )
+    session.add_all([alert1, alert2])
+    await session.commit()
+
+    assert alert1.id is not None
+    assert alert2.id is not None
+    assert alert1.id != alert2.id
+
+
+async def test_resolved_backup_record_alert_does_not_block_new_active_alert(session):
+    _, _, job = await _server_disk_job(session)
+    record = build_backup_record(job.id)
+    session.add(record)
+    await session.commit()
+
+    alert1 = build_alert(
+        entity_type="backup_record",
+        backup_record_id=record.id,
+        alert_type=AlertType.FTP_COPY_INTEGRITY_FAILED,
+        status=AlertStatus.RESOLVED,
+    )
+    session.add(alert1)
+    await session.commit()
+
+    alert2 = build_alert(
+        entity_type="backup_record",
+        backup_record_id=record.id,
+        alert_type=AlertType.FTP_COPY_INTEGRITY_FAILED,
+        status=AlertStatus.ACTIVE,
+    )
+    session.add(alert2)
+    await session.commit()
+
+    assert alert2.id is not None
+
+
+async def test_verification_run_defaults_to_restore_verifyonly(session):
+    _, _, job = await _server_disk_job(session)
+
+    run = build_verification_run(job.id)
+    session.add(run)
+    await session.commit()
+    await session.refresh(run)
+
+    assert run.verification_type == VerificationType.RESTORE_VERIFYONLY
+
+
+async def test_multiple_terminal_ftp_copy_integrity_runs_for_same_job_are_allowed(session):
+    """uq_verification_runs_active_per_backup_job only blocks PENDING/
+    RUNNING rows -- FTP_COPY_INTEGRITY rows are always inserted with an
+    already-terminal status, so multiple of them per backup_job_id must
+    never collide with that partial unique index (full history is
+    intentional -- spec section 6, item 5)."""
+    _, _, job = await _server_disk_job(session)
+
+    run1 = build_verification_run(
+        job.id,
+        verification_type=VerificationType.FTP_COPY_INTEGRITY,
+        status=VerificationRunStatus.OK,
+        triggered_by="agent",
+    )
+    run2 = build_verification_run(
+        job.id,
+        verification_type=VerificationType.FTP_COPY_INTEGRITY,
+        status=VerificationRunStatus.CORRUPT,
+        triggered_by="agent",
+    )
+    session.add_all([run1, run2])
+    await session.commit()
+
+    assert run1.id is not None
+    assert run2.id is not None
+    assert run1.id != run2.id
+
+
+async def test_ftp_copy_integrity_run_does_not_block_pending_restore_verifyonly_run(session):
+    """A terminal FTP_COPY_INTEGRITY run for a job must not interfere with
+    that job's own PENDING/RUNNING RESTORE_VERIFYONLY exclusivity -- the
+    partial unique index is keyed purely on (backup_job_id, status), not
+    verification_type."""
+    _, _, job = await _server_disk_job(session)
+
+    copy_run = build_verification_run(
+        job.id,
+        verification_type=VerificationType.FTP_COPY_INTEGRITY,
+        status=VerificationRunStatus.OK,
+        triggered_by="agent",
+    )
+    session.add(copy_run)
+    await session.commit()
+
+    restore_run = VerificationRun(backup_job_id=job.id, triggered_by="scheduler")
+    session.add(restore_run)
+    await session.commit()
+    assert restore_run.id is not None

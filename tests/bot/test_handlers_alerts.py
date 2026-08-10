@@ -17,7 +17,7 @@ def _make_alert(**overrides) -> AlertRead:
     defaults = dict(
         id=1, alert_type=AlertType.JOB_FAILED, severity=AlertSeverity.WARNING,
         entity_type="backup_job", server_id=None, disk_id=None, backup_job_id=1,
-        job_run_id=None, restore_operation_id=None, title="t", message="m",
+        job_run_id=None, restore_operation_id=None, backup_record_id=None, title="t", message="m",
         status=AlertStatus.ACTIVE, channel=AlertChannel.BOTH, delivered_telegram_at=None,
         acknowledged_by=None, acknowledged_at=None, resolved_at=None, resolved_note=None,
         created_at=_NOW, updated_at=_NOW,

@@ -270,6 +270,26 @@ async def test_delete_job_run_sets_alert_job_run_id_null(session):
     assert refreshed.job_run_id is None
 
 
+async def test_delete_backup_record_sets_alert_backup_record_id_null(session):
+    server, disk, job = await _server_disk_job(session)
+    record = build_backup_record(job.id)
+    session.add(record)
+    await session.commit()
+
+    alert = build_alert(entity_type="backup_record", backup_record_id=record.id)
+    session.add(alert)
+    await session.commit()
+    alert_id = alert.id
+
+    await session.execute(delete(BackupRecord).where(BackupRecord.id == record.id))
+    await session.commit()
+    session.expire_all()
+
+    refreshed = await session.get(Alert, alert_id)
+    assert refreshed is not None
+    assert refreshed.backup_record_id is None
+
+
 async def test_delete_restore_operation_sets_alert_restore_operation_id_null(session):
     server, disk, job = await _server_disk_job(session)
     sql_instance = build_sql_instance()

@@ -36,6 +36,7 @@ class AlertRead(BaseModel):
     backup_job_id: int | None
     job_run_id: int | None
     restore_operation_id: int | None
+    backup_record_id: int | None
     title: str
     message: str
     status: AlertStatus

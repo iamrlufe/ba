@@ -53,6 +53,11 @@ class AlertType(str, Enum):
     # BACKUP_VERIFICATION_FAILED instead; do not conflate the two.
     VERIFICATION_FAILED = "VERIFICATION_FAILED"
     BACKUP_VERIFICATION_FAILED = "BACKUP_VERIFICATION_FAILED"
+    # Deliberately NOT reusing BACKUP_VERIFICATION_FAILED: that literal is
+    # reserved for the RESTORE_VERIFYONLY flow (see docstring above); this
+    # one is raised only by app.workers.copy_verification (FTP copy-integrity
+    # checks reported by the future standalone agent).
+    FTP_COPY_INTEGRITY_FAILED = "FTP_COPY_INTEGRITY_FAILED"
     DISK_SPACE_LOW = "DISK_SPACE_LOW"
     DISK_SPACE_CRITICAL = "DISK_SPACE_CRITICAL"
     SERVER_UNREACHABLE = "SERVER_UNREACHABLE"
@@ -109,6 +114,21 @@ class VerificationRunStatus(str, Enum):
 class UserRole(str, Enum):
     ADMIN = "ADMIN"
     OPERATOR = "OPERATOR"
+
+
+class VerificationType(str, Enum):
+    """Discriminates what kind of check a VerificationRun row represents.
+
+    RESTORE_VERIFYONLY: app/workers/backup_verification.py's SQL Server
+    RESTORE VERIFYONLY flow (the only kind that existed before this enum
+    was introduced -- every pre-existing row backfills to this value).
+    FTP_COPY_INTEGRITY: a filesystem-level SHA-256 comparison against a
+    `<file>.sha256` sidecar, reported by a future standalone agent via
+    app/workers/copy_verification.py.
+    """
+
+    RESTORE_VERIFYONLY = "RESTORE_VERIFYONLY"
+    FTP_COPY_INTEGRITY = "FTP_COPY_INTEGRITY"
 
 
 # --- Terminal status sets, shared by model docstrings and Pydantic transition

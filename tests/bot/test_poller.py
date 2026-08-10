@@ -21,7 +21,7 @@ def _make_alert(id_, *, channel=AlertChannel.BOTH, status=AlertStatus.ACTIVE) ->
     return AlertRead.model_validate(dict(
         id=id_, alert_type=AlertType.JOB_FAILED, severity=AlertSeverity.WARNING,
         entity_type="backup_job", server_id=None, disk_id=None, backup_job_id=1,
-        job_run_id=None, restore_operation_id=None, title=f"alert {id_}", message="m",
+        job_run_id=None, restore_operation_id=None, backup_record_id=None, title=f"alert {id_}", message="m",
         status=status, channel=channel, delivered_telegram_at=None,
         acknowledged_by=None, acknowledged_at=None, resolved_at=None, resolved_note=None,
         created_at=_NOW, updated_at=_NOW,

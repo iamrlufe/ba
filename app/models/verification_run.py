@@ -4,7 +4,7 @@ from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, Stri
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
-from app.models.enums import VerificationRunStatus
+from app.models.enums import VerificationRunStatus, VerificationType
 
 # Kept in sync (by hand) with alembic/versions/0006_verification_runs.py --
 # both the model's __table_args__ index below and the migration's
@@ -31,6 +31,7 @@ class VerificationRun(TimestampMixin, Base):
         Index("ix_verification_runs_backup_record_id", "backup_record_id"),
         Index("ix_verification_runs_sql_instance_id", "sql_instance_id"),
         Index("ix_verification_runs_status", "status"),
+        Index("ix_verification_runs_verification_type", "verification_type"),
         Index("ix_verification_runs_backup_job_id_status", "backup_job_id", "status"),
         Index("ix_verification_runs_started_at", "started_at"),
         # At most one PENDING/RUNNING verification run per backup_job_id.
@@ -59,6 +60,18 @@ class VerificationRun(TimestampMixin, Base):
     triggered_by: Mapped[str] = mapped_column(
         String(50), nullable=False, default="scheduler", server_default="scheduler"
     )
+    # Discriminates RESTORE_VERIFYONLY (app/workers/backup_verification.py)
+    # from FTP_COPY_INTEGRITY (app/workers/copy_verification.py) rows.
+    # Immutable once set. Defaults to RESTORE_VERIFYONLY so every existing
+    # code path that inserts a VerificationRun without setting this field
+    # explicitly (i.e. all of app/workers/backup_verification.py) requires
+    # zero changes.
+    verification_type: Mapped[VerificationType] = mapped_column(
+        Enum(VerificationType, native_enum=False, values_callable=lambda e: [x.value for x in e]),
+        nullable=False,
+        default=VerificationType.RESTORE_VERIFYONLY,
+        server_default=VerificationType.RESTORE_VERIFYONLY.value,
+    )
     status: Mapped[VerificationRunStatus] = mapped_column(
         Enum(VerificationRunStatus, native_enum=False, values_callable=lambda e: [x.value for x in e]),
         nullable=False,
@@ -67,8 +80,13 @@ class VerificationRun(TimestampMixin, Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Only ever populated for verification_type=RESTORE_VERIFYONLY; left
+    # NULL for FTP_COPY_INTEGRITY rows (no msdb involved in that flow).
     msdb_backup_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     msdb_is_damaged: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Free-text summary output, populated by either flow: the raw RESTORE
+    # VERIFYONLY output for RESTORE_VERIFYONLY rows, or an
+    # "actual_checksum=..." note for FTP_COPY_INTEGRITY rows.
     verifyonly_output: Mapped[str | None] = mapped_column(Text, nullable=True)
     # MUST never contain decrypted or encrypted credential values -- see
     # app/workers/backup_verification.py / app/core/sql_client.py.

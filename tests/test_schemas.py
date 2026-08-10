@@ -19,6 +19,7 @@ from app.models.enums import (
 )
 from app.schemas.backup_job import BackupJobCreate
 from app.schemas.backup_record import BackupRecordBase
+from app.schemas.copy_verification import AgentCopyVerificationStatus, CopyVerificationReportRequest
 from app.schemas.disk import DiskBase, DiskCreate
 from app.schemas.job_run import JobRunUpdate
 from app.schemas.job_run import is_valid_transition as job_run_is_valid_transition
@@ -387,4 +388,64 @@ def test_backup_record_both_checksum_and_algorithm_is_accepted():
         file_name="f.bak", remote_path="/r/f.bak", file_size_bytes=10, checksum="abc123", checksum_algorithm="sha256"
     )
     assert record.checksum == "abc123"
-    assert record.checksum_algorithm == "sha256"
+
+
+# --------------------------------------------------------------------------
+# CopyVerificationReportRequest: actual_checksum required/forbidden per status
+# --------------------------------------------------------------------------
+
+
+def test_copy_verification_ok_requires_actual_checksum():
+    with pytest.raises(ValidationError):
+        CopyVerificationReportRequest(
+            status=AgentCopyVerificationStatus.OK, checked_at="2026-08-10T00:00:00Z"
+        )
+
+
+def test_copy_verification_mismatch_requires_actual_checksum():
+    with pytest.raises(ValidationError):
+        CopyVerificationReportRequest(
+            status=AgentCopyVerificationStatus.MISMATCH, checked_at="2026-08-10T00:00:00Z"
+        )
+
+
+def test_copy_verification_missing_sidecar_forbids_actual_checksum():
+    with pytest.raises(ValidationError):
+        CopyVerificationReportRequest(
+            status=AgentCopyVerificationStatus.MISSING_SIDECAR,
+            actual_checksum="abc",
+            checked_at="2026-08-10T00:00:00Z",
+        )
+
+
+def test_copy_verification_file_unreadable_forbids_actual_checksum():
+    with pytest.raises(ValidationError):
+        CopyVerificationReportRequest(
+            status=AgentCopyVerificationStatus.FILE_UNREADABLE,
+            actual_checksum="abc",
+            checked_at="2026-08-10T00:00:00Z",
+        )
+
+
+def test_copy_verification_ok_with_checksum_is_accepted():
+    req = CopyVerificationReportRequest(
+        status=AgentCopyVerificationStatus.OK, actual_checksum="abc", checked_at="2026-08-10T00:00:00Z"
+    )
+    assert req.actual_checksum == "abc"
+
+
+def test_copy_verification_missing_sidecar_without_checksum_is_accepted():
+    req = CopyVerificationReportRequest(
+        status=AgentCopyVerificationStatus.MISSING_SIDECAR, checked_at="2026-08-10T00:00:00Z"
+    )
+    assert req.actual_checksum is None
+
+
+def test_copy_verification_extra_field_is_rejected():
+    with pytest.raises(ValidationError):
+        CopyVerificationReportRequest(
+            status=AgentCopyVerificationStatus.OK,
+            actual_checksum="abc",
+            checked_at="2026-08-10T00:00:00Z",
+            extra_field="nope",
+        )

@@ -8,7 +8,7 @@ from app.core.auth import get_current_user, require_role
 from app.core.db import async_session_maker, get_db
 from app.models.backup_job import BackupJob
 from app.models.disk import Disk
-from app.models.enums import JobRunStatus, UserRole, VerificationRunStatus
+from app.models.enums import JobRunStatus, UserRole, VerificationRunStatus, VerificationType
 from app.models.job_run import JobRun
 from app.models.server import Server
 from app.models.sql_instance import SqlInstance
@@ -221,6 +221,8 @@ async def verify_backup_job(
 async def list_backup_job_verification_runs(
     backup_job_id: int,
     status: VerificationRunStatus | None = None,
+    verification_type: VerificationType | None = None,
+    backup_record_id: int | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db),
@@ -230,6 +232,10 @@ async def list_backup_job_verification_runs(
     filters = [VerificationRun.backup_job_id == backup_job_id]
     if status is not None:
         filters.append(VerificationRun.status == status)
+    if verification_type is not None:
+        filters.append(VerificationRun.verification_type == verification_type)
+    if backup_record_id is not None:
+        filters.append(VerificationRun.backup_record_id == backup_record_id)
 
     total_stmt = select(func.count()).select_from(VerificationRun).where(*filters)
     items_stmt = (

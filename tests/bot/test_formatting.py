@@ -22,6 +22,7 @@ def _make_alert(**overrides) -> AlertRead:
         backup_job_id=7,
         job_run_id=None,
         restore_operation_id=None,
+        backup_record_id=None,
         title="Job failed",
         message="Something went wrong during the backup run.",
         status=AlertStatus.ACTIVE,

@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.enums import VerificationRunStatus
+from app.models.enums import VerificationRunStatus, VerificationType
 
 
 class VerificationRunRead(BaseModel):
@@ -13,6 +13,7 @@ class VerificationRunRead(BaseModel):
     backup_record_id: int | None
     sql_instance_id: int | None
     triggered_by: str
+    verification_type: VerificationType
     status: VerificationRunStatus
     started_at: datetime | None
     finished_at: datetime | None
