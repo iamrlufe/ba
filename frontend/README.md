@@ -96,3 +96,55 @@ this frontend-only change** since they require backend work:
 - `npm run build` — type-check (`tsc -b`) and build for production
 - `npm run lint` — run oxlint
 - `npm run gen:api` — regenerate `src/api/schema.gen.ts` from a locally running backend
+
+## Прод: nginx и WebSocket-токен в query string
+
+Auth-токен для WebSocket (`/ws/job-runs/{id}?token=...`) передаётся через query 
+string — ограничение Browser WebSocket API (нет способа передать кастомные 
+заголовки при upgrade-запросе). Это означает, что токен **гарантированно 
+попадёт в access-лог** любого reverse-proxy на пути между клиентом и backend, 
+если явно не настроить иначе.
+
+### Обязательно перед продакшен-деплоем
+
+В конфиге nginx (или Caddy) для location `/ws/` нужно либо замаскировать query 
+string в логах, либо полностью отключить логирование для этого пути.
+
+**Вариант A — кастомный log_format без query string (рекомендуется, сохраняет видимость подключений):**
+
+В `http {}` блоке `nginx.conf`:
+```nginx
+log_format combined_no_query '$remote_addr - $remote_user [$time_local] '
+                              '"$request_method $uri" $status $body_bytes_sent '
+                              '"$http_referer" "$http_user_agent"';
+```
+
+В `location /ws/`:
+```nginx
+location /ws/ {
+    proxy_pass http://backend_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+
+    access_log /var/log/nginx/ws_access.log combined_no_query;
+}
+```
+
+**Вариант B — полностью отключить логирование для /ws/ (проще, но теряется видимость реконнектов/обрывов):**
+```nginx
+location /ws/ {
+    ...
+    access_log off;
+}
+```
+
+### Долгосрочное решение (не в этой итерации)
+
+Правильное архитектурное решение — короткоживущий WS-тикет: клиент запрашивает 
+одноразовый токен через отдельный REST-эндпоинт (например, 
+`POST /api/ws-ticket`), обменивает его на подключение, тикет истекает за 
+секунды и не пригоден для повторного использования. Это устраняет саму 
+причину утечки, а не просто маскирует её в логах. Требует backend-изменения — 
+отдельная будущая итерация.
