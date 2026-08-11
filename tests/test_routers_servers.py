@@ -150,3 +150,77 @@ async def test_delete_server_with_enabled_backup_job_is_409(admin_client, sessio
 async def test_delete_server_404(admin_client):
     resp = await admin_client.delete("/api/servers/999999")
     assert resp.status_code == 404
+
+
+# ==========================================================================
+# GET /api/servers/{server_id}/metrics
+# ==========================================================================
+
+
+async def test_get_server_metrics_404_for_missing_server(admin_client):
+    resp = await admin_client.get("/api/servers/999999/metrics")
+    assert resp.status_code == 404
+
+
+async def test_get_server_metrics_200_null_when_no_heartbeat_yet(admin_client, session):
+    server = build_server()
+    session.add(server)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/servers/{server.id}/metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["server_id"] == server.id
+    assert body["metrics"] is None
+
+
+# ==========================================================================
+# PATCH /api/servers/{server_id} -- monitored_service_names semantics
+# ==========================================================================
+
+
+async def test_patch_monitored_service_names_omitted_leaves_untouched(admin_client, session):
+    server = build_server(monitored_service_names=["ExistingService"])
+    session.add(server)
+    await session.commit()
+
+    resp = await admin_client.patch(f"/api/servers/{server.id}", json={"notes": "unrelated update"})
+    assert resp.status_code == 200
+    assert resp.json()["monitored_service_names"] == ["ExistingService"]
+
+
+async def test_patch_monitored_service_names_explicit_null_clears_override(admin_client, session):
+    server = build_server(monitored_service_names=["ExistingService"])
+    session.add(server)
+    await session.commit()
+
+    resp = await admin_client.patch(
+        f"/api/servers/{server.id}", json={"monitored_service_names": None}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["monitored_service_names"] is None
+
+
+async def test_patch_monitored_service_names_explicit_empty_list_sets_override(admin_client, session):
+    server = build_server(monitored_service_names=None)
+    session.add(server)
+    await session.commit()
+
+    resp = await admin_client.patch(
+        f"/api/servers/{server.id}", json={"monitored_service_names": []}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["monitored_service_names"] == []
+
+
+async def test_patch_monitored_service_names_populated_list_sets_override(admin_client, session):
+    server = build_server(monitored_service_names=None)
+    session.add(server)
+    await session.commit()
+
+    resp = await admin_client.patch(
+        f"/api/servers/{server.id}",
+        json={"monitored_service_names": ["Service1", "Service2"]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["monitored_service_names"] == ["Service1", "Service2"]

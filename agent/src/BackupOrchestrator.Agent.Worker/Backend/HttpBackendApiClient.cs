@@ -110,6 +110,35 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         return new JobsPage { Items = body.Items, Total = body.Total };
     }
 
+    public async Task<MonitoringConfigResult> GetMonitoringConfigAsync(int serverId, CancellationToken cancellationToken)
+    {
+        var uri = $"/api/agents/{serverId}/monitoring-config";
+        using var response = await ExecuteAsync(
+            _defaultRetryPipeline,
+            static r => IsRetryableStatus(r.StatusCode),
+            () => new HttpRequestMessage(HttpMethod.Get, uri),
+            cancellationToken);
+
+        LogOutcome("GET", uri, response.StatusCode);
+
+        // Any non-2xx that wasn't already retried by the pipeline (e.g. a 404
+        // for a deleted/misconfigured ServerId) must not throw an unhandled
+        // HttpRequestException out of this method -- MonitoringConfigPollHostedService
+        // only catches BackendUnavailableException, and an unhandled exception
+        // from any BackgroundService.ExecuteAsync takes down the whole agent
+        // host (BackgroundServiceExceptionBehavior.StopHost). Treat any
+        // remaining non-success the same as backend-unavailable: the poll
+        // loop logs it and continues with the last-known cached config.
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new BackendUnavailableException($"GET {uri} returned {(int)response.StatusCode} {response.StatusCode}");
+        }
+
+        var body = await response.Content.ReadFromJsonAsync<MonitoringConfigBody>(AgentJsonOptions.Default, cancellationToken)
+            ?? throw new BackendUnavailableException($"GET {uri} returned an empty body");
+        return new MonitoringConfigResult { ServerId = body.ServerId, ServiceNames = body.ServiceNames };
+    }
+
     public async Task<ConnectionConfigResult> GetConnectionConfigAsync(int serverId, CancellationToken cancellationToken)
     {
         var uri = $"/api/agents/{serverId}/connection-config";
@@ -303,5 +332,11 @@ public sealed class HttpBackendApiClient : IBackendApiClient
     {
         public List<BackupJobDto> Items { get; set; } = [];
         public int Total { get; set; }
+    }
+
+    private sealed class MonitoringConfigBody
+    {
+        public int ServerId { get; set; }
+        public List<string> ServiceNames { get; set; } = [];
     }
 }

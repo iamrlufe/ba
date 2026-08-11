@@ -3,6 +3,7 @@ using BackupOrchestrator.Agent.Core.Contracts;
 using BackupOrchestrator.Agent.Core.Scheduling;
 using BackupOrchestrator.Agent.Worker.Backend;
 using BackupOrchestrator.Agent.Worker.HostedServices;
+using BackupOrchestrator.Agent.Worker.Monitoring;
 using BackupOrchestrator.Agent.Worker.OfflineQueue;
 using BackupOrchestrator.Agent.Worker.Transfer;
 using Microsoft.Extensions.Options;
@@ -61,6 +62,11 @@ builder.Services.AddSingleton<JobScheduler>();
 // ---- I/O implementations (Worker-only) -----------------------------------
 builder.Services.AddSingleton<IOfflineEventQueue, SqliteOfflineEventQueue>();
 builder.Services.AddSingleton<IBackupTransferClient, WinScpTransferClient>();
+builder.Services.AddSingleton<IProcessSnapshotProvider, ProcessSnapshotProvider>();
+builder.Services.AddSingleton<ICpuUsageSampler, CpuUsageSampler>();
+builder.Services.AddSingleton<IHostMemoryProvider, HostMemoryProvider>();
+builder.Services.AddSingleton<IServiceStatusChecker, ServiceStatusChecker>();
+builder.Services.AddSingleton<IMonitoringConfigCache, InMemoryMonitoringConfigCache>();
 
 builder.Services.AddHttpClient<IBackendApiClient, HttpBackendApiClient>((serviceProvider, client) =>
 {
@@ -79,6 +85,8 @@ builder.Services.AddHostedService<HeartbeatHostedService>();
 builder.Services.AddHostedService<JobPollHostedService>();
 builder.Services.AddHostedService<SchedulerHostedService>();
 builder.Services.AddHostedService<OfflineReplayHostedService>();
+builder.Services.AddHostedService<CpuSamplingHostedService>();
+builder.Services.AddHostedService<MonitoringConfigPollHostedService>();
 
 // Windows Service integration -- no-op when not actually running as a
 // service (e.g. `dotnet run` in a console during development), safe to

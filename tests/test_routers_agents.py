@@ -191,6 +191,160 @@ async def test_heartbeat_validation_error_on_bad_disk_usage(admin_client, sessio
 
 
 # ==========================================================================
+# Extended monitoring: metrics/services on heartbeat + GET .../metrics
+# ==========================================================================
+
+_METRICS_PAYLOAD = {
+    "cpu_usage_pct": 45.5,
+    "memory_used_bytes": 4_000_000_000,
+    "memory_total_bytes": 8_000_000_000,
+    "top_processes": [
+        {"process_name": "sqlservr.exe", "pid": 1234, "cpu_pct": 12.3, "memory_bytes": 500_000_000}
+    ],
+}
+
+
+async def test_heartbeat_metrics_populated_round_trips_via_get_metrics(admin_client, session):
+    server = build_server()
+    session.add(server)
+    await session.commit()
+
+    hb = await admin_client.post(
+        f"/api/agents/{server.id}/heartbeat",
+        json={"reachable": True, "metrics": _METRICS_PAYLOAD},
+    )
+    assert hb.status_code == 200
+
+    resp = await admin_client.get(f"/api/servers/{server.id}/metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["server_id"] == server.id
+    metrics = body["metrics"]
+    assert metrics is not None
+    assert metrics["cpu_usage_pct"] == 45.5
+    assert metrics["memory_used_bytes"] == 4_000_000_000
+    assert metrics["memory_total_bytes"] == 8_000_000_000
+    assert metrics["memory_used_pct"] == 50.0
+    assert metrics["top_processes"] == _METRICS_PAYLOAD["top_processes"]
+    assert metrics["checked_at"] is not None
+
+
+async def test_heartbeat_metrics_and_services_both_null_creates_no_metrics_row(admin_client, session):
+    server = build_server()
+    session.add(server)
+    await session.commit()
+
+    hb = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
+    assert hb.status_code == 200
+
+    resp = await admin_client.get(f"/api/servers/{server.id}/metrics")
+    assert resp.status_code == 200
+    assert resp.json()["metrics"] is None
+
+    from sqlalchemy import func, select
+
+    from app.models.server_metrics import ServerMetrics
+
+    count = (
+        await session.execute(
+            select(func.count()).select_from(ServerMetrics).where(ServerMetrics.server_id == server.id)
+        )
+    ).scalar_one()
+    assert count == 0
+
+
+async def test_heartbeat_services_null_vs_empty_list_semantics(admin_client, session):
+    """The crux of this feature: `services: null`/omitted must leave the
+    stored `services_status` untouched, while an explicit `services: []`
+    must wipe it to empty -- these are NOT equivalent.
+    """
+    server = build_server()
+    session.add(server)
+    await session.commit()
+
+    real_services = [{"service_name": "MSSQLSERVER", "status": "Running"}]
+
+    # 1. First heartbeat sets services_status to a real value.
+    r1 = await admin_client.post(
+        f"/api/agents/{server.id}/heartbeat",
+        json={"reachable": True, "services": real_services},
+    )
+    assert r1.status_code == 200
+
+    get1 = await admin_client.get(f"/api/servers/{server.id}/metrics")
+    assert get1.json()["metrics"]["services_status"] == real_services
+
+    # 2. Follow-up heartbeat with services omitted (null) must NOT wipe it.
+    r2 = await admin_client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
+    assert r2.status_code == 200
+
+    get2 = await admin_client.get(f"/api/servers/{server.id}/metrics")
+    assert get2.json()["metrics"]["services_status"] == real_services
+
+    # 3. A heartbeat with an EXPLICIT empty list DOES wipe it to [].
+    r3 = await admin_client.post(
+        f"/api/agents/{server.id}/heartbeat",
+        json={"reachable": True, "services": []},
+    )
+    assert r3.status_code == 200
+
+    get3 = await admin_client.get(f"/api/servers/{server.id}/metrics")
+    assert get3.json()["metrics"]["services_status"] == []
+
+
+# ==========================================================================
+# GET /api/agents/{server_id}/monitoring-config
+# ==========================================================================
+
+
+async def test_monitoring_config_none_override_resolves_to_global_default(admin_client, session, monkeypatch):
+    monkeypatch.setattr(settings, "DEFAULT_MONITORED_SERVICE_NAMES", "MSSQLSERVER,SQLSERVERAGENT")
+    server = build_server(monitored_service_names=None)
+    session.add(server)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/monitoring-config")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["server_id"] == server.id
+    assert body["service_names"] == ["MSSQLSERVER", "SQLSERVERAGENT"]
+    assert body["service_names"] == settings.default_monitored_service_names
+
+
+async def test_monitoring_config_explicit_empty_override_is_not_collapsed_into_default(
+    admin_client, session, monkeypatch
+):
+    """Regression guard for the `is not None` vs truthiness distinction: an
+    explicit `[]` override must be returned as-is, NOT silently fall
+    through to the (non-empty) global default.
+    """
+    monkeypatch.setattr(settings, "DEFAULT_MONITORED_SERVICE_NAMES", "MSSQLSERVER,SQLSERVERAGENT")
+    server = build_server(monitored_service_names=[])
+    session.add(server)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/monitoring-config")
+    assert resp.status_code == 200
+    assert resp.json()["service_names"] == []
+
+
+async def test_monitoring_config_populated_override_returned_exactly(admin_client, session, monkeypatch):
+    monkeypatch.setattr(settings, "DEFAULT_MONITORED_SERVICE_NAMES", "SOME_OTHER_SERVICE")
+    server = build_server(monitored_service_names=["CustomService1", "CustomService2"])
+    session.add(server)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/monitoring-config")
+    assert resp.status_code == 200
+    assert resp.json()["service_names"] == ["CustomService1", "CustomService2"]
+
+
+async def test_monitoring_config_404_for_missing_server(admin_client):
+    resp = await admin_client.get("/api/agents/999999/monitoring-config")
+    assert resp.status_code == 404
+
+
+# ==========================================================================
 # GET /api/agents/{server_id}/jobs
 # ==========================================================================
 

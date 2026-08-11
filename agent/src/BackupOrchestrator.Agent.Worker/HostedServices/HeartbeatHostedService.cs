@@ -2,12 +2,15 @@ using System.Text.Json;
 using BackupOrchestrator.Agent.Core.Configuration;
 using BackupOrchestrator.Agent.Core.Contracts;
 using BackupOrchestrator.Agent.Core.Models;
+using BackupOrchestrator.Agent.Core.Monitoring;
 using Microsoft.Extensions.Options;
 
 namespace BackupOrchestrator.Agent.Worker.HostedServices;
 
 /// <summary>
-/// Reads local disk usage via DriveInfo.GetDrives() and POSTs it to
+/// Reads local disk usage via DriveInfo.GetDrives(), CPU/memory metrics via
+/// ICpuUsageSampler/IHostMemoryProvider, and monitored-service statuses via
+/// IMonitoringConfigCache/IServiceStatusChecker, then POSTs it all to
 /// /api/agents/{server_id}/heartbeat on HeartbeatIntervalSeconds. On backend
 /// unavailability the payload is enqueued to the offline queue as a
 /// Heartbeat event -- safe to lose/age-evict per spec, but still queued for
@@ -17,17 +20,29 @@ public sealed class HeartbeatHostedService : BackgroundService
 {
     private readonly IBackendApiClient _backendApiClient;
     private readonly IOfflineEventQueue _offlineQueue;
+    private readonly ICpuUsageSampler _cpuUsageSampler;
+    private readonly IHostMemoryProvider _hostMemoryProvider;
+    private readonly IMonitoringConfigCache _monitoringConfigCache;
+    private readonly IServiceStatusChecker _serviceStatusChecker;
     private readonly AgentOptions _options;
     private readonly ILogger<HeartbeatHostedService> _logger;
 
     public HeartbeatHostedService(
         IBackendApiClient backendApiClient,
         IOfflineEventQueue offlineQueue,
+        ICpuUsageSampler cpuUsageSampler,
+        IHostMemoryProvider hostMemoryProvider,
+        IMonitoringConfigCache monitoringConfigCache,
+        IServiceStatusChecker serviceStatusChecker,
         IOptions<AgentOptions> options,
         ILogger<HeartbeatHostedService> logger)
     {
         _backendApiClient = backendApiClient;
         _offlineQueue = offlineQueue;
+        _cpuUsageSampler = cpuUsageSampler;
+        _hostMemoryProvider = hostMemoryProvider;
+        _monitoringConfigCache = monitoringConfigCache;
+        _serviceStatusChecker = serviceStatusChecker;
         _options = options.Value;
         _logger = logger;
     }
@@ -60,7 +75,7 @@ public sealed class HeartbeatHostedService : BackgroundService
         }
     }
 
-    internal static HeartbeatRequest BuildHeartbeatRequest()
+    internal HeartbeatRequest BuildHeartbeatRequest()
     {
         var disks = new List<DiskUsageItem>();
 
@@ -89,6 +104,62 @@ public sealed class HeartbeatHostedService : BackgroundService
             }
         }
 
-        return new HeartbeatRequest { Reachable = true, Disks = disks };
+        MetricsPayload? metrics = null;
+        try
+        {
+            // Memory is read BEFORE TakeAndReset() deliberately: TakeAndReset()
+            // clears the CPU sampler's accumulator as a side effect, so if
+            // memory collection fails, the CPU samples for this interval must
+            // still be sitting in the accumulator for the NEXT heartbeat to
+            // pick up -- calling TakeAndReset() first would silently discard
+            // them even though this cycle's metrics end up null either way.
+            var mem = _hostMemoryProvider.GetMemoryStatus();
+            var cpu = _cpuUsageSampler.TakeAndReset();
+            if (cpu is not null)
+            {
+                metrics = new MetricsPayload
+                {
+                    CpuUsagePct = cpu.MachineCpuUsagePct,
+                    MemoryUsedBytes = mem.UsedBytes,
+                    MemoryTotalBytes = mem.TotalBytes,
+                    TopProcesses = TopProcessSelector.Select(cpu.LatestProcessSamples),
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Metrics collection failed this heartbeat cycle; sending metrics=null");
+            metrics = null;
+        }
+
+        IReadOnlyList<ServiceStatusItem>? services = null;
+        try
+        {
+            var configuredNames = _monitoringConfigCache.CurrentServiceNames;
+            if (configuredNames is not null)
+            {
+                var results = new List<ServiceStatusItem>(configuredNames.Count);
+                foreach (var name in configuredNames)
+                {
+                    try
+                    {
+                        results.Add(_serviceStatusChecker.CheckStatus(name));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Service status check failed for {ServiceName}; skipping", name);
+                    }
+                }
+
+                services = results;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Service status collection failed this heartbeat cycle; sending services=null");
+            services = null;
+        }
+
+        return new HeartbeatRequest { Reachable = true, Disks = disks, Metrics = metrics, Services = services };
     }
 }

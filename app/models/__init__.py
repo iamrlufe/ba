@@ -8,6 +8,7 @@ from app.models.base import Base
 from app.models.server import Server
 from app.models.sql_instance import SqlInstance
 from app.models.disk import Disk
+from app.models.server_metrics import ServerMetrics
 from app.models.backup_job import BackupJob
 from app.models.job_run import JobRun
 from app.models.backup_record import BackupRecord
@@ -22,6 +23,7 @@ __all__ = [
     "Server",
     "SqlInstance",
     "Disk",
+    "ServerMetrics",
     "BackupJob",
     "JobRun",
     "BackupRecord",

@@ -135,6 +135,19 @@ class Settings(BaseSettings):
     # docstring in app/workers/backup_verification.py).
     BACKUP_VERIFICATION_STUCK_RUN_GRACE_SECONDS: int = 900
 
+    # Comma-separated Windows service names checked on every Server whose
+    # monitored_service_names override is NULL (see Server.monitored_service_names
+    # and GET /api/agents/{server_id}/monitoring-config). Set once during initial
+    # setup; NOT live-editable through the web UI -- changing it requires an
+    # operator to edit .env and recreate the backend container (docker compose
+    # up -d --force-recreate backend), same workflow already used for every
+    # other Settings field in this file.
+    DEFAULT_MONITORED_SERVICE_NAMES: str = ""
+
+    @property
+    def default_monitored_service_names(self) -> list[str]:
+        return [s.strip() for s in self.DEFAULT_MONITORED_SERVICE_NAMES.split(",") if s.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:

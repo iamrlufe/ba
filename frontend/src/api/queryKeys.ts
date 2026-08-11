@@ -11,6 +11,7 @@ export const queryKeys = {
     all: () => ["servers"] as const,
     list: (filters: Record<string, unknown>) => ["servers", "list", filters] as const,
     detail: (id: number) => ["servers", "detail", id] as const,
+    metrics: (id: number) => ["servers", "metrics", id] as const,
   },
   disks: {
     all: () => ["disks"] as const,

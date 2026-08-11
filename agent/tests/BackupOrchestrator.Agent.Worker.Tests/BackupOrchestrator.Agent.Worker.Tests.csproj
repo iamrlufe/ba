@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BackupOrchestrator.Agent.Core\BackupOrchestrator.Agent.Core.csproj" />
+    <!--
+      Properties="RuntimeIdentifier=;SelfContained=false" overrides the
+      Worker project's own hardcoded win-x64/self-contained publish settings
+      for THIS reference only (global MSBuild properties passed to a
+      ProjectReference take precedence over the referenced project's own
+      unconditional RuntimeIdentifier/SelfContained assignments).
+      Without this, `dotnet build`/`dotnet test` on this project produces a
+      win-x64-architecture-specific PE that a non-Windows/non-x64 test host
+      (e.g. this macOS arm64 sandbox) cannot load at all
+      (FileLoadException: "The assembly architecture is not compatible with
+      the current process architecture"). This does NOT change the Worker
+      project's own `dotnet publish` behavior (still win-x64 self-contained
+      single-file per its csproj); it only affects how the test project
+      resolves this one reference.
+    -->
+    <ProjectReference
+      Include="..\..\src\BackupOrchestrator.Agent.Worker\BackupOrchestrator.Agent.Worker.csproj"
+      Properties="RuntimeIdentifier=;SelfContained=false" />
+  </ItemGroup>
+
+</Project>

@@ -60,4 +60,14 @@ public sealed class AgentOptions
     /// of this value.
     /// </summary>
     public int OfflineQueueMaxAgeDays { get; set; } = 14;
+
+    /// <summary>Polling cadence for GET /api/agents/{server_id}/monitoring-config.
+    /// Deliberately much longer than JobPollIntervalSeconds -- this config
+    /// changes only on rare manual admin edits.</summary>
+    public int MonitoringConfigPollIntervalSeconds { get; set; } = 300;
+
+    /// <summary>Sub-interval cadence for CpuSamplingHostedService's CPU-delta
+    /// ticks -- see ICpuUsageSampler. Should be well under HeartbeatIntervalSeconds
+    /// so several ticks accumulate per heartbeat window.</summary>
+    public int CpuSamplingIntervalSeconds { get; set; } = 5;
 }

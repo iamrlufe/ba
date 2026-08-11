@@ -84,6 +84,24 @@ public sealed class AgentOptionsValidator : IValidateOptions<AgentOptions>
             errors.Add($"{nameof(AgentOptions.OfflineQueueMaxAgeDays)} must be positive.");
         }
 
+        if (options.MonitoringConfigPollIntervalSeconds <= 0)
+        {
+            errors.Add($"{nameof(AgentOptions.MonitoringConfigPollIntervalSeconds)} must be positive.");
+        }
+
+        if (options.CpuSamplingIntervalSeconds <= 0)
+        {
+            errors.Add($"{nameof(AgentOptions.CpuSamplingIntervalSeconds)} must be positive.");
+        }
+
+        if (options.CpuSamplingIntervalSeconds > options.HeartbeatIntervalSeconds)
+        {
+            errors.Add(
+                $"{nameof(AgentOptions.CpuSamplingIntervalSeconds)} must not exceed " +
+                $"{nameof(AgentOptions.HeartbeatIntervalSeconds)} -- otherwise the accumulator would rarely " +
+                "collect more than one sample per heartbeat window, defeating interval averaging.");
+        }
+
         return errors.Count > 0
             ? ValidateOptionsResult.Fail(errors)
             : ValidateOptionsResult.Success;
@@ -103,7 +121,7 @@ public sealed class AgentOptionsValidator : IValidateOptions<AgentOptions>
             {
                 errors.Add(
                     $"{fieldName} looks like an unfilled placeholder value ('{marker}' found) -- " +
-                    "set a real secret via the Agent__{fieldName} environment variable.");
+                    $"set a real secret via the Agent__{fieldName} environment variable.");
                 return;
             }
         }

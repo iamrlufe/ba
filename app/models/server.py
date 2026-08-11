@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Index, Integer, JSON, String, Text
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -53,6 +53,12 @@ class Server(TimestampMixin, Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    # Per-server override for monitored Windows service names. NULL means
+    # "use Settings.DEFAULT_MONITORED_SERVICE_NAMES"; non-NULL (including an
+    # empty list) fully replaces the global default -- never merged. See
+    # app/schemas/server.py::ServerUpdate.monitored_service_names and
+    # app/routers/agents.py::get_agent_monitoring_config.
+    monitored_service_names: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     disks: Mapped[list["Disk"]] = relationship(
         "Disk", back_populates="server", cascade="all, delete-orphan"

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import {
   Dialog,
   DialogContent,
@@ -22,17 +23,18 @@ import { ErrorState } from "@/components/shared/ErrorState";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { DiskUsageBar } from "@/components/shared/DiskUsageBar";
 import { ServerStatusBadge, JobRunStatusBadge } from "@/components/shared/StatusBadge";
+import { ServiceStatusBadge } from "@/components/shared/ServiceStatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { WithTooltip } from "@/components/shared/WithTooltip";
 import { useAuth } from "@/auth/AuthContext";
 import { queryKeys } from "@/api/queryKeys";
-import { deleteServer, getServer, updateServer } from "@/api/endpoints/servers";
+import { deleteServer, getServer, getServerMetrics, updateServer } from "@/api/endpoints/servers";
 import { listDisks } from "@/api/endpoints/disks";
 import { listBackupJobs } from "@/api/endpoints/backupJobs";
 import { listJobRuns } from "@/api/endpoints/jobRuns";
 import { ApiError } from "@/api/client";
-import { formatDateTime, formatRelativeTime } from "@/lib/utils";
-import type { BackupJobRead, ServerRead } from "@/api/types";
+import { formatBytes, formatDateTime, formatRelativeTime } from "@/lib/utils";
+import type { AgentProcessItem, AgentServiceStatusItem, BackupJobRead, ServerMetricsRead, ServerRead } from "@/api/types";
 
 export function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -58,6 +60,12 @@ export function ServerDetailPage() {
   const jobsQuery = useQuery({
     queryKey: queryKeys.backupJobs.list({ server_id: serverId }),
     queryFn: () => listBackupJobs(token, { server_id: serverId, limit: 200 }),
+    enabled: Number.isFinite(serverId),
+  });
+
+  const metricsQuery = useQuery({
+    queryKey: queryKeys.servers.metrics(serverId),
+    queryFn: () => getServerMetrics(token, serverId),
     enabled: Number.isFinite(serverId),
   });
 
@@ -109,6 +117,7 @@ export function ServerDetailPage() {
           <CardTitle>Server info</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+          <Field label="ID">{server.id}</Field>
           <Field label="Status">
             <ServerStatusBadge status={server.status} />
           </Field>
@@ -154,6 +163,26 @@ export function ServerDetailPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Metrics</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {metricsQuery.isLoading ? (
+            <CardSkeleton />
+          ) : metricsQuery.isError ? (
+            <ErrorState error={metricsQuery.error} onRetry={() => metricsQuery.refetch()} />
+          ) : !metricsQuery.data?.metrics ? (
+            <EmptyState
+              title="No monitoring data yet"
+              description="This server's agent hasn't reported CPU/memory/service metrics yet."
+            />
+          ) : (
+            <ServerMetricsPanel metrics={metricsQuery.data.metrics} />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Backup jobs</CardTitle>
         </CardHeader>
         <CardContent>
@@ -191,6 +220,8 @@ interface ServerEditFormValues {
   host: string;
   port: number;
   notes: string;
+  useGlobalServiceDefault: boolean;
+  serviceNamesText: string;
   changeCredentials: boolean;
   username: string;
   password: string;
@@ -221,6 +252,8 @@ function ServerEditDialog({
       host: server.host,
       port: server.port,
       notes: server.notes ?? "",
+      useGlobalServiceDefault: server.monitored_service_names === null,
+      serviceNamesText: (server.monitored_service_names ?? []).join("\n"),
       changeCredentials: false,
       username: "",
       password: "",
@@ -228,6 +261,7 @@ function ServerEditDialog({
     },
   });
   const changeCredentials = form.watch("changeCredentials");
+  const useGlobalServiceDefault = form.watch("useGlobalServiceDefault");
 
   const mutation = useMutation({
     mutationFn: (values: ServerEditFormValues) => {
@@ -236,6 +270,12 @@ function ServerEditDialog({
         host: values.host,
         port: values.port,
         notes: values.notes || null,
+        monitored_service_names: values.useGlobalServiceDefault
+          ? null
+          : values.serviceNamesText
+              .split(/[\n,]+/)
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0),
       };
       if (values.changeCredentials) {
         // Only include fields the admin actually typed into -- the
@@ -322,6 +362,42 @@ function ServerEditDialog({
                 </FormItem>
               )}
             />
+
+            <div className="flex items-center gap-2">
+              <input
+                id="use-global-service-default"
+                type="checkbox"
+                className="h-4 w-4"
+                checked={useGlobalServiceDefault}
+                onChange={(e) => form.setValue("useGlobalServiceDefault", e.target.checked)}
+              />
+              <label htmlFor="use-global-service-default" className="text-sm">
+                Use global default monitored services
+              </label>
+            </div>
+
+            {!useGlobalServiceDefault ? (
+              <FormField
+                control={form.control}
+                name="serviceNamesText"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Monitored service names</FormLabel>
+                    <FormControl>
+                      <Textarea placeholder={"One service name per line (or comma-separated)\ne.g. MSSQLSERVER"} {...field} />
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      Leave empty to explicitly monitor no services on this server.
+                    </p>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                This server uses the globally configured default service list.
+              </p>
+            )}
 
             <div className="flex items-center gap-2">
               <input
@@ -452,6 +528,88 @@ function JobWithRuns({ job }: { job: BackupJobRead }) {
           </TableBody>
         </Table>
       )}
+    </div>
+  );
+}
+
+function ServerMetricsPanel({ metrics }: { metrics: ServerMetricsRead }) {
+  const processes = (metrics.top_processes ?? []) as unknown as AgentProcessItem[];
+  const services = (metrics.services_status ?? []) as unknown as AgentServiceStatusItem[];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <MetricBar label="CPU" pct={metrics.cpu_usage_pct} />
+        <MetricBar
+          label="Memory"
+          pct={metrics.memory_used_pct}
+          detail={
+            metrics.memory_used_bytes != null && metrics.memory_total_bytes != null
+              ? `${formatBytes(metrics.memory_used_bytes)} / ${formatBytes(metrics.memory_total_bytes)}`
+              : undefined
+          }
+        />
+      </div>
+
+      <p className="text-xs text-muted-foreground">
+        Last checked: {formatRelativeTime(metrics.checked_at)}
+        {metrics.checked_at ? ` (${formatDateTime(metrics.checked_at)})` : ""}
+      </p>
+
+      {services.length > 0 ? (
+        <div>
+          <p className="mb-2 text-sm font-medium">Services</p>
+          <ul className="space-y-1">
+            {services.map((svc) => (
+              <li key={svc.service_name} className="flex items-center gap-2 text-sm">
+                <ServiceStatusBadge status={svc.status} />
+                <span>{svc.service_name}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {processes.length > 0 ? (
+        <div>
+          <p className="mb-2 text-sm font-medium">Top processes</p>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Process</TableHead>
+                <TableHead>PID</TableHead>
+                <TableHead>CPU%</TableHead>
+                <TableHead>Memory</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {processes.map((proc, i) => (
+                <TableRow key={`${proc.process_name}-${proc.pid ?? i}`}>
+                  <TableCell>{proc.process_name}</TableCell>
+                  <TableCell className="text-muted-foreground">{proc.pid ?? "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">{proc.cpu_pct.toFixed(1)}%</TableCell>
+                  <TableCell className="text-muted-foreground">{formatBytes(proc.memory_bytes)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MetricBar({ label, pct, detail }: { label: string; pct: number | null; detail?: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between">
+        <p className="text-xs font-medium text-muted-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground">
+          {pct == null ? "no data" : `${pct.toFixed(1)}%`}
+          {detail ? ` · ${detail}` : ""}
+        </p>
+      </div>
+      <Progress value={pct ?? 0} />
     </div>
   );
 }

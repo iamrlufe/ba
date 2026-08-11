@@ -8,9 +8,11 @@ from app.core.security import encrypt_secret
 from app.models.backup_job import BackupJob
 from app.models.enums import ServerStatus, UserRole
 from app.models.server import Server
+from app.models.server_metrics import ServerMetrics
 from app.routers._deps import get_or_404
 from app.schemas.common import PaginatedResponse
 from app.schemas.server import ServerCreate, ServerRead, ServerUpdate
+from app.schemas.server_metrics import ServerMetricsRead, ServerMetricsResponse
 
 router = APIRouter(tags=["servers"])
 
@@ -69,6 +71,24 @@ async def list_servers(
 @router.get("/{server_id}", response_model=ServerRead, dependencies=[Depends(get_current_user)])
 async def get_server(server_id: int, session: AsyncSession = Depends(get_db)) -> Server:
     return await get_or_404(session, Server, server_id)
+
+
+@router.get(
+    "/{server_id}/metrics",
+    response_model=ServerMetricsResponse,
+    dependencies=[Depends(get_current_user)],
+)
+async def get_server_metrics(
+    server_id: int, session: AsyncSession = Depends(get_db)
+) -> ServerMetricsResponse:
+    await get_or_404(session, Server, server_id)  # 404 only if the SERVER doesn't exist
+    row = (
+        await session.execute(select(ServerMetrics).where(ServerMetrics.server_id == server_id))
+    ).scalar_one_or_none()
+    return ServerMetricsResponse(
+        server_id=server_id,
+        metrics=ServerMetricsRead.model_validate(row) if row is not None else None,
+    )
 
 
 @router.patch(

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import log_agent_credential_access
 from app.core.auth import require_admin_or_agent_key, require_connection_config_key, require_role
+from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import decrypt_secret
 from app.models.agent_credential_access_log import AgentCredentialAccessLog
@@ -29,9 +30,15 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.server import Server
+from app.models.server_metrics import ServerMetrics
 from app.routers._alerts import raise_alert_if_absent, resolve_active_alert
 from app.routers._deps import get_or_404
-from app.schemas.agent import AgentConnectionConfigResponse, AgentHeartbeatRequest, AgentHeartbeatResponse
+from app.schemas.agent import (
+    AgentConnectionConfigResponse,
+    AgentHeartbeatRequest,
+    AgentHeartbeatResponse,
+    AgentMonitoringConfigResponse,
+)
 from app.schemas.agent_credential_access_log import AgentCredentialAccessLogRead
 from app.schemas.alert import AlertRead
 from app.schemas.backup_job import BackupJobRead
@@ -127,6 +134,35 @@ async def agent_heartbeat(
             session.add(disk)
             await session.flush()
         touched_disks.append(disk)
+
+    # --- extended monitoring snapshot (CPU/memory/top-processes/services) ---
+    # Snapshot only -- overwritten in place, no history. Row is created
+    # lazily here (not eagerly on Server creation) only if this heartbeat
+    # actually reports `metrics` and/or `services`. No downstream use of
+    # metrics_row.id within this request (unlike the Disk find-or-create
+    # block above, which flushes to get disk.id for the threshold-alert
+    # loop), so no explicit flush is needed -- session.commit() below
+    # persists the new row via SQLAlchemy's unit-of-work regardless.
+    if payload.metrics is not None or payload.services is not None:
+        stmt = select(ServerMetrics).where(ServerMetrics.server_id == server_id)
+        metrics_row = (await session.execute(stmt)).scalar_one_or_none()
+        if metrics_row is None:
+            metrics_row = ServerMetrics(server_id=server_id)
+            session.add(metrics_row)
+
+        if payload.metrics is not None:
+            metrics_row.cpu_usage_pct = payload.metrics.cpu_usage_pct
+            metrics_row.memory_used_bytes = payload.metrics.memory_used_bytes
+            metrics_row.memory_total_bytes = payload.metrics.memory_total_bytes
+            metrics_row.top_processes = [p.model_dump() for p in payload.metrics.top_processes]
+
+        if payload.services is not None:
+            # Always a full overwrite, never a merge with the previous
+            # snapshot -- even an explicit [] replaces whatever was stored
+            # before.
+            metrics_row.services_status = [s.model_dump() for s in payload.services]
+
+        metrics_row.checked_at = now
 
     # --- threshold alerting (only already-active disks) -----------------
     for disk in touched_disks:
@@ -251,6 +287,31 @@ async def list_agent_jobs(
     return PaginatedResponse[BackupJobRead](
         items=[BackupJobRead.model_validate(j) for j in items], total=total, limit=limit, offset=offset
     )
+
+
+@router.get(
+    "/{server_id}/monitoring-config",
+    response_model=AgentMonitoringConfigResponse,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
+async def get_agent_monitoring_config(
+    server_id: int, session: AsyncSession = Depends(get_db)
+) -> AgentMonitoringConfigResponse:
+    """Resolves which Windows service names this server's agent should
+    check on each heartbeat: the per-server `Server.monitored_service_names`
+    override if set (including an explicit empty list -- "monitor
+    nothing"), else the global `Settings.DEFAULT_MONITORED_SERVICE_NAMES`
+    default. Deliberately `is not None`, never a truthiness check -- an
+    explicit `[]` override must not silently fall through to the global
+    default.
+    """
+    server = await get_or_404(session, Server, server_id)
+    service_names = (
+        server.monitored_service_names
+        if server.monitored_service_names is not None
+        else settings.default_monitored_service_names
+    )
+    return AgentMonitoringConfigResponse(server_id=server_id, service_names=service_names)
 
 
 @router.get(

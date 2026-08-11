@@ -1,5 +1,5 @@
 import { apiFetch, buildQuery } from "../client";
-import type { PaginatedResponse, ServerCreate, ServerRead, ServerUpdate } from "../types";
+import type { PaginatedResponse, ServerCreate, ServerMetricsResponse, ServerRead, ServerUpdate } from "../types";
 
 export interface ListServersParams {
   [key: string]: string | number | boolean | undefined;
@@ -30,4 +30,8 @@ export async function updateServer(token: string | null, id: number, payload: Se
 
 export async function deleteServer(token: string | null, id: number): Promise<void> {
   await apiFetch<void>(`/servers/${id}`, { method: "DELETE", token });
+}
+
+export async function getServerMetrics(token: string | null, id: number): Promise<ServerMetricsResponse> {
+  return apiFetch<ServerMetricsResponse>(`/servers/${id}/metrics`, { token });
 }

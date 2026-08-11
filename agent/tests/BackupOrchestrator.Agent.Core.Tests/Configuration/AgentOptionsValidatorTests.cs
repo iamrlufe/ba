@@ -18,6 +18,8 @@ public sealed class AgentOptionsValidatorTests
         JobPollIntervalSeconds = 30,
         DefaultJobTimeoutMinutes = 120,
         OfflineQueueMaxAgeDays = 14,
+        MonitoringConfigPollIntervalSeconds = 300,
+        CpuSamplingIntervalSeconds = 5,
     };
 
     [Fact]
@@ -226,6 +228,75 @@ public sealed class AgentOptionsValidatorTests
 
         Assert.True(result.Failed);
         Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.OfflineQueueMaxAgeDays)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveMonitoringConfigPollIntervalSeconds_Fails(int value)
+    {
+        var options = ValidOptions();
+        options.MonitoringConfigPollIntervalSeconds = value;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.MonitoringConfigPollIntervalSeconds)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveCpuSamplingIntervalSeconds_Fails(int value)
+    {
+        var options = ValidOptions();
+        options.CpuSamplingIntervalSeconds = value;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.CpuSamplingIntervalSeconds)));
+    }
+
+    [Fact]
+    public void Validate_CpuSamplingIntervalSecondsExceedsHeartbeatIntervalSeconds_Fails()
+    {
+        var options = ValidOptions();
+        options.HeartbeatIntervalSeconds = 30;
+        options.CpuSamplingIntervalSeconds = 31;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(
+            result.Failures!,
+            f => f.Contains(nameof(AgentOptions.CpuSamplingIntervalSeconds))
+                 && f.Contains(nameof(AgentOptions.HeartbeatIntervalSeconds)));
+    }
+
+    [Fact]
+    public void Validate_CpuSamplingIntervalSecondsEqualsHeartbeatIntervalSeconds_DoesNotFailCrossFieldRule()
+    {
+        // "must not exceed" -- equal is allowed, only strictly greater fails.
+        var options = ValidOptions();
+        options.HeartbeatIntervalSeconds = 30;
+        options.CpuSamplingIntervalSeconds = 30;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
+    public void Validate_CpuSamplingIntervalSecondsLessThanHeartbeatIntervalSeconds_Succeeds()
+    {
+        var options = ValidOptions();
+        options.HeartbeatIntervalSeconds = 60;
+        options.CpuSamplingIntervalSeconds = 5;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
     }
 
     [Fact]

@@ -119,6 +119,23 @@ export interface paths {
         patch: operations["update_server_api_servers__server_id__patch"];
         trace?: never;
     };
+    "/api/servers/{server_id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Server Metrics */
+        get: operations["get_server_metrics_api_servers__server_id__metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sql-instances": {
         parameters: {
             query?: never;
@@ -292,6 +309,103 @@ export interface paths {
         put?: never;
         /** Agent Heartbeat */
         post: operations["agent_heartbeat_api_agents__server_id__heartbeat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{server_id}/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Agent Jobs
+         * @description Full-snapshot poll of a server's enabled BackupJobs, for the C#/.NET
+         *     agent to discover what it should be backing up. No destination-path
+         *     field here -- the agent decides the remote path itself and reports it
+         *     back via POST /api/backup-records (BackupRecord.remote_path).
+         */
+        get: operations["list_agent_jobs_api_agents__server_id__jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{server_id}/monitoring-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Monitoring Config
+         * @description Resolves which Windows service names this server's agent should
+         *     check on each heartbeat: the per-server `Server.monitored_service_names`
+         *     override if set (including an explicit empty list -- "monitor
+         *     nothing"), else the global `Settings.DEFAULT_MONITORED_SERVICE_NAMES`
+         *     default. Deliberately `is not None`, never a truthiness check -- an
+         *     explicit `[]` override must not silently fall through to the global
+         *     default.
+         */
+        get: operations["get_agent_monitoring_config_api_agents__server_id__monitoring_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{server_id}/connection-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Connection Config
+         * @description Decrypts and returns this server's FTP/SFTP credentials for the
+         *     agent to consume. Gated by `require_connection_config_key` -- a
+         *     SEPARATE, more restricted secret than the general X-Agent-Key (see
+         *     that dependency's docstring). Every call is audit-logged, for every
+         *     outcome including denials -- see app/core/audit.py.
+         *
+         *     `principal` mirrors `require_admin_or_agent_key`'s convention: the
+         *     authenticated admin `User` if a JWT was used, else `None` (key-header
+         *     path has no User principal) -- used here only to fill in
+         *     `auth_method`/`admin_username` on the audit log row, since the
+         *     dependency itself already logged the "unauthorized" outcome (if any)
+         *     before this handler ever started running.
+         */
+        get: operations["get_agent_connection_config_api_agents__server_id__connection_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/credential-access-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agent Credential Access Log */
+        get: operations["list_agent_credential_access_log_api_agents_credential_access_log_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -566,15 +680,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/healthz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Healthz */
+        get: operations["healthz_healthz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AgentConnectionConfigResponse
+         * @description Response for `GET /api/agents/{server_id}/connection-config`.
+         *
+         *     `from_attributes=False` is deliberate: this is the ONE sanctioned
+         *     exception to app/models/server.py's "credentials must never be exposed"
+         *     rule (see that module's class docstring), and it must stay that way
+         *     only by construction discipline -- always build this manually,
+         *     field-by-field, from freshly-decrypted plaintext in the route handler.
+         *     Never `.model_validate(server, ...)` this schema: `Server` has no
+         *     plaintext `username`/`password`/`ssh_private_key` attributes to
+         *     validate from anyway (only the `*_encrypted` columns), but the
+         *     from_attributes=False here is a deliberate belt-and-suspenders guard
+         *     against a future refactor accidentally adding such attributes and
+         *     silently making this schema attribute-validatable.
+         */
+        AgentConnectionConfigResponse: {
+            /** Server Id */
+            server_id: number;
+            /** Host */
+            host: string;
+            /** Port */
+            port: number;
+            protocol: components["schemas"]["ProtocolType"];
+            /** Username */
+            username?: string | null;
+            /** Password */
+            password?: string | null;
+            /** Ssh Private Key */
+            ssh_private_key?: string | null;
+        };
+        /**
          * AgentCopyVerificationStatus
          * @enum {string}
          */
         AgentCopyVerificationStatus: "OK" | "MISMATCH" | "MISSING_SIDECAR" | "FILE_UNREADABLE";
+        /**
+         * AgentCredentialAccessAuthMethod
+         * @description How a caller authenticated to
+         *     `GET /api/agents/{server_id}/connection-config` -- backs
+         *     `AgentCredentialAccessLog.auth_method` (app/models/agent_credential_access_log.py).
+         * @enum {string}
+         */
+        AgentCredentialAccessAuthMethod: "connection_config_key" | "admin_jwt";
+        /**
+         * AgentCredentialAccessLogRead
+         * @description Read schema for `GET /api/agents/credential-access-log` (admin-only).
+         *
+         *     Deliberately contains only metadata -- never decrypted credential
+         *     values or the raw key header value (those are never stored on the
+         *     underlying `AgentCredentialAccessLog` model in the first place, see
+         *     app/models/agent_credential_access_log.py).
+         */
+        AgentCredentialAccessLogRead: {
+            /** Id */
+            id: number;
+            /** Server Id */
+            server_id: number;
+            /**
+             * Accessed At
+             * Format: date-time
+             */
+            accessed_at: string;
+            /** Requester Ip */
+            requester_ip: string | null;
+            auth_method: components["schemas"]["AgentCredentialAccessAuthMethod"];
+            /** Admin Username */
+            admin_username: string | null;
+            outcome: components["schemas"]["AgentCredentialAccessOutcome"];
+        };
+        /**
+         * AgentCredentialAccessOutcome
+         * @description Result of a call to
+         *     `GET /api/agents/{server_id}/connection-config` -- backs
+         *     `AgentCredentialAccessLog.outcome`. Exactly one row is written per
+         *     call, regardless of outcome (success or any denial).
+         * @enum {string}
+         */
+        AgentCredentialAccessOutcome: "success" | "denied_disabled" | "denied_deleted" | "denied_no_credentials" | "not_found" | "unauthorized" | "decryption_failed";
         /**
          * AgentDiskUsageItem
          * @description One disk-usage sample reported by an agent heartbeat.
@@ -599,6 +804,9 @@ export interface components {
             reachable: boolean;
             /** Disks */
             disks?: components["schemas"]["AgentDiskUsageItem"][];
+            metrics?: components["schemas"]["AgentMetricsItem"] | null;
+            /** Services */
+            services?: components["schemas"]["AgentServiceStatusItem"][] | null;
         };
         /** AgentHeartbeatResponse */
         AgentHeartbeatResponse: {
@@ -609,6 +817,42 @@ export interface components {
             alerts_raised: components["schemas"]["AlertRead"][];
             /** Alerts Resolved */
             alerts_resolved: components["schemas"]["AlertRead"][];
+        };
+        /** AgentMetricsItem */
+        AgentMetricsItem: {
+            /** Cpu Usage Pct */
+            cpu_usage_pct: number;
+            /** Memory Used Bytes */
+            memory_used_bytes: number;
+            /** Memory Total Bytes */
+            memory_total_bytes: number;
+            /** Top Processes */
+            top_processes?: components["schemas"]["AgentProcessItem"][];
+        };
+        /** AgentMonitoringConfigResponse */
+        AgentMonitoringConfigResponse: {
+            /** Server Id */
+            server_id: number;
+            /** Service Names */
+            service_names: string[];
+        };
+        /** AgentProcessItem */
+        AgentProcessItem: {
+            /** Process Name */
+            process_name: string;
+            /** Pid */
+            pid?: number | null;
+            /** Cpu Pct */
+            cpu_pct: number;
+            /** Memory Bytes */
+            memory_bytes: number;
+        };
+        /** AgentServiceStatusItem */
+        AgentServiceStatusItem: {
+            /** Service Name */
+            service_name: string;
+            /** Status */
+            status: string;
         };
         /**
          * AlertAcknowledgeRequest
@@ -1184,6 +1428,17 @@ export interface components {
              */
             updated_at: string;
         };
+        /** PaginatedResponse[AgentCredentialAccessLogRead] */
+        PaginatedResponse_AgentCredentialAccessLogRead_: {
+            /** Items */
+            items: components["schemas"]["AgentCredentialAccessLogRead"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
         /** PaginatedResponse[AlertRead] */
         PaginatedResponse_AlertRead_: {
             /** Items */
@@ -1412,6 +1667,47 @@ export interface components {
             /** Ssh Private Key */
             ssh_private_key?: string | null;
         };
+        /** ServerMetricsRead */
+        ServerMetricsRead: {
+            /** Id */
+            id: number;
+            /** Server Id */
+            server_id: number;
+            /** Cpu Usage Pct */
+            cpu_usage_pct: number | null;
+            /** Memory Used Bytes */
+            memory_used_bytes: number | null;
+            /** Memory Total Bytes */
+            memory_total_bytes: number | null;
+            /** Top Processes */
+            top_processes: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Services Status */
+            services_status: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Checked At */
+            checked_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Memory Used Pct */
+            readonly memory_used_pct: number | null;
+        };
+        /** ServerMetricsResponse */
+        ServerMetricsResponse: {
+            /** Server Id */
+            server_id: number;
+            metrics: components["schemas"]["ServerMetricsRead"] | null;
+        };
         /** ServerRead */
         ServerRead: {
             /** Name */
@@ -1434,6 +1730,8 @@ export interface components {
             last_seen_at: string | null;
             /** Is Deleted */
             is_deleted: boolean;
+            /** Monitored Service Names */
+            monitored_service_names: string[] | null;
             /**
              * Created At
              * Format: date-time
@@ -1477,6 +1775,11 @@ export interface components {
              * @description Empty string clears the stored SSH private key.
              */
             ssh_private_key?: string | null;
+            /**
+             * Monitored Service Names
+             * @description Per-server override for monitored Windows service names. Field absent from the request = do not change. Explicit null = clear the override (revert to the global DEFAULT_MONITORED_SERVICE_NAMES default). Explicit [] = override to 'monitor nothing on this server' (a valid, meaningful, distinct state from null -- do not collapse it with null via truthiness checks).
+             */
+            monitored_service_names?: string[] | null;
         };
         /** SqlInstanceCreate */
         SqlInstanceCreate: {
@@ -1652,8 +1955,11 @@ export interface components {
             started_at: string | null;
             /** Finished At */
             finished_at: string | null;
-            /** Msdb Backup Date */
-            msdb_backup_date: string | null;
+            /**
+             * Msdb Backup Date
+             * @description Backup finish time as reported by msdb.dbo.backupset.backup_finish_date on the source SQL Server. Unlike every other datetime field in this API, this value reflects that SQL Server's OWN local clock, NOT UTC -- it is sourced from a system outside this application's control and no timezone conversion is applied (see app/core/sql_client.py). Do not assume this value is UTC when displaying it.
+             */
+            msdb_backup_date?: string | null;
             /** Msdb Is Damaged */
             msdb_is_damaged: boolean | null;
             /** Verifyonly Output */
@@ -2003,6 +2309,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ServerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_server_metrics_api_servers__server_id__metrics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerMetricsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2629,6 +2966,141 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentHeartbeatResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_agent_jobs_api_agents__server_id__jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                "X-Agent-Key"?: string | null;
+            };
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_BackupJobRead_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_monitoring_config_api_agents__server_id__monitoring_config_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Agent-Key"?: string | null;
+            };
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentMonitoringConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_connection_config_api_agents__server_id__connection_config_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Connection-Config-Key"?: string | null;
+            };
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentConnectionConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_agent_credential_access_log_api_agents_credential_access_log_get: {
+        parameters: {
+            query?: {
+                server_id?: number | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_AgentCredentialAccessLogRead_"];
                 };
             };
             /** @description Validation Error */
@@ -3304,6 +3776,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DailySummary"];
+                };
+            };
+        };
+    };
+    healthz_healthz_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
         };

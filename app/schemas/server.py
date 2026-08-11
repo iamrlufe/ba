@@ -51,6 +51,18 @@ class ServerUpdate(BaseModel):
         default=None, description="Empty string clears the stored SSH private key."
     )
 
+    monitored_service_names: list[str] | None = Field(
+        default=None,
+        description=(
+            "Per-server override for monitored Windows service names. Field "
+            "absent from the request = do not change. Explicit null = clear "
+            "the override (revert to the global DEFAULT_MONITORED_SERVICE_NAMES "
+            "default). Explicit [] = override to 'monitor nothing on this "
+            "server' (a valid, meaningful, distinct state from null -- do not "
+            "collapse it with null via truthiness checks)."
+        ),
+    )
+
 
 class ServerRead(ServerBase):
     id: int
@@ -59,5 +71,6 @@ class ServerRead(ServerBase):
     ssh_key_set: bool
     last_seen_at: UtcDatetime | None
     is_deleted: bool
+    monitored_service_names: list[str] | None
     created_at: UtcDatetime
     updated_at: UtcDatetime

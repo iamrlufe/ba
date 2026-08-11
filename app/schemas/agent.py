@@ -12,6 +12,7 @@ from app.models.enums import ProtocolType
 from app.schemas.alert import AlertRead
 from app.schemas.disk import AgentDiskUsageItem, DiskRead
 from app.schemas.server import ServerRead
+from app.schemas.server_metrics import AgentMetricsItem, AgentServiceStatusItem
 
 
 class AgentHeartbeatRequest(BaseModel):
@@ -19,6 +20,14 @@ class AgentHeartbeatRequest(BaseModel):
 
     reachable: bool
     disks: list[AgentDiskUsageItem] = Field(default_factory=list)
+    metrics: AgentMetricsItem | None = None
+    # Deliberately `None` by default (NOT `Field(default_factory=list)` like
+    # `disks` above): None/omitted = "this agent build doesn't report
+    # service status at all, don't touch stored services_status". An
+    # explicit [] = "agent checked, found/resolved zero services to
+    # monitor, overwrite stored services_status to empty." See
+    # app/routers/agents.py::agent_heartbeat.
+    services: list[AgentServiceStatusItem] | None = None
 
 
 class AgentHeartbeatResponse(BaseModel):
@@ -28,6 +37,13 @@ class AgentHeartbeatResponse(BaseModel):
     disks: list[DiskRead]
     alerts_raised: list[AlertRead]
     alerts_resolved: list[AlertRead]
+
+
+class AgentMonitoringConfigResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=False)
+
+    server_id: int
+    service_names: list[str]
 
 
 class AgentConnectionConfigResponse(BaseModel):

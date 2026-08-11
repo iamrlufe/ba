@@ -323,6 +323,7 @@ export function ServersListPage() {
                         <Link to={`/servers/${server.id}`} className="font-medium hover:underline">
                           {server.name}
                         </Link>
+                        <p className="text-xs text-muted-foreground">ID {server.id}</p>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {server.host}:{server.port}

@@ -36,6 +36,7 @@ export function makeServer(overrides: Partial<ServerRead> = {}): ServerRead {
     ssh_key_set: false,
     last_seen_at: "2026-08-10T10:00:00Z",
     is_deleted: false,
+    monitored_service_names: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,

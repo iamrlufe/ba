@@ -40,6 +40,12 @@
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Settings.Configuration" Version="8.0.4" />
+    <!-- Pinned to 8.0.1 to stay consistent with this project's other
+         Microsoft.Extensions.* 8.0.x pins: `dotnet add package` without a
+         version resolved to 10.0.10 (the latest overall release on NuGet),
+         which would be an odd major-version outlier next to net8.0-windows
+         and the rest of this dependency set. -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
     <!-- Real WinSCP .NET assembly, per spec. Not exercisable against a live
          server in this sandbox; see note above and Transfer/WinScpTransferClient.cs. -->
     <PackageReference Include="WinSCP" Version="6.5.0" />

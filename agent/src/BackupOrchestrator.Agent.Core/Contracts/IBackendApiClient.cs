@@ -24,6 +24,13 @@ public interface IBackendApiClient
     Task<JobsPage> GetJobsAsync(int serverId, int limit, int offset, CancellationToken cancellationToken);
 
     /// <summary>
+    /// GET /api/agents/{server_id}/monitoring-config. Polled on a much longer
+    /// cadence than jobs (see AgentOptions.MonitoringConfigPollIntervalSeconds)
+    /// since this only changes on rare manual admin edits.
+    /// </summary>
+    Task<MonitoringConfigResult> GetMonitoringConfigAsync(int serverId, CancellationToken cancellationToken);
+
+    /// <summary>
     /// GET /api/agents/{server_id}/connection-config. Never throws for the
     /// documented non-200 outcomes (404/409/403/500) -- those are all
     /// modeled in ConnectionConfigResult.Outcome. Only throws

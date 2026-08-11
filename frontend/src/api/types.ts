@@ -83,6 +83,17 @@ export type DiskRead = components["schemas"]["DiskRead"];
 export type DiskCreate = components["schemas"]["DiskCreate"];
 export type DiskUpdate = components["schemas"]["DiskUpdate"];
 
+export type ServerMetricsResponse = components["schemas"]["ServerMetricsResponse"];
+export type ServerMetricsRead = components["schemas"]["ServerMetricsRead"];
+
+// ServerMetricsRead.top_processes/services_status are typed as opaque
+// `list[dict]` in the OpenAPI schema (not reusable typed refs), so they
+// come through as Record<string, unknown>[] -- cast at the consumption
+// boundary using these, which openapi-typescript DOES generate as named
+// schemas (referenced elsewhere, by AgentMetricsItem/AgentHeartbeatRequest).
+export type AgentProcessItem = components["schemas"]["AgentProcessItem"];
+export type AgentServiceStatusItem = components["schemas"]["AgentServiceStatusItem"];
+
 // ---------------------------------------------------------------------------
 // Backup jobs
 // ---------------------------------------------------------------------------
