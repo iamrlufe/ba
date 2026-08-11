@@ -1,8 +1,14 @@
-# Build context for BOTH services is the repo root (".") -- backend's
-# Dockerfile does `COPY app ./app` + `COPY alembic ./alembic`, and
-# bot/Dockerfile does `COPY app ./app` + `COPY bot ./bot`, both repo-root-
-# relative. Do NOT change either service to `build: ./<dir>` shorthand,
-# which would set context=./<dir> and break both COPY instructions.
+# Build context: backend ("Dockerfile", context: .) and bot ("bot/Dockerfile",
+# context: .) both use the repo root as build context, because they COPY
+# app ./app / COPY alembic ./alembic (backend) and COPY app ./app + COPY bot
+# ./bot (bot) -- paths outside their own subdirectory. Do NOT change either
+# to `build: ./<dir>` shorthand, which would set context=./<dir> and break
+# both COPY instructions.
+#
+# frontend is DIFFERENT: it is a fully self-contained npm package with no
+# dependency on anything outside frontend/, so its build context is
+# ./frontend (not the repo root) -- this is deliberate, not an oversight, do
+# not "fix" it to match backend/bot's context: . pattern.
 services:
   backend:
     build:
@@ -34,6 +40,24 @@ services:
       BOT_STATE_DB_PATH: /srv/app/data/bot_state.db
     volumes:
       - bot_data:/srv/app/data
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the JS bundle at `vite build` time (see
+        # frontend/Dockerfile's ARG/ENV comment) -- NOT read at container
+        # runtime. Explicit here even though it matches the Dockerfile's own
+        # default, for the same self-documentation reasons the `bot` service
+        # restates BOT_API_BASE_URL/BOT_STATE_DB_PATH explicitly.
+        VITE_API_BASE_URL: /api
+    ports:
+      - "8090:80"
     restart: unless-stopped
     depends_on:
       backend:

@@ -62,6 +62,53 @@ docker compose up -d --force-recreate bot
 Entrypoint выполняет только `alembic upgrade head` автоматически; откат — ручной: 
 `docker compose exec backend uv run alembic downgrade <rev>`.
 
+### Frontend — сборка и порт
+
+- Frontend теперь тоже собирается и поднимается через тот же `docker compose build` / 
+  `docker compose up -d`, отдельных шагов не требуется.
+- `frontend` слушает `8090` на хосте (nginx внутри контейнера — на `80`), проксирует 
+  `/api/` и `/ws/` на `backend:8000` внутри compose-сети.
+- Build context для `frontend` — `./frontend`, НЕ корень репозитория (в отличие от 
+  backend/bot) — фронтенд не зависит от кода вне своей директории.
+
+### VITE_* переменные — другая модель, чем backend .env
+
+- `VITE_API_BASE_URL` (и любые другие `VITE_*`) вшиваются в JS-бандл **во время 
+  `vite build`** (`import.meta.env.VITE_*` статически заменяется esbuild/rollup) — это 
+  НЕ читается заново при старте контейнера, в отличие от backend/bot, где 
+  pydantic-settings/python-dotenv читает `.env` живьём при старте процесса.
+- `docker compose up -d --force-recreate backend` пересоздаёт контейнер и подхватывает 
+  новый `.env` — этого **достаточно** для backend/bot. Для frontend этого 
+  **недостаточно**: смена `VITE_API_BASE_URL` требует пересборки образа:
+  ```
+  docker compose build --no-cache frontend
+  docker compose up -d frontend
+  ```
+- В текущей топологии деплоя (frontend и backend за одним reverse-proxy origin) 
+  `VITE_API_BASE_URL=/api` всегда корректен и обычно не требует изменения — этот раздел 
+  нужен в основном чтобы будущий оператор не тратил время на `--force-recreate`, 
+  недоумевая почему ничего не изменилось.
+
+### Frontend + Nginx Proxy Manager
+
+NPM в этом деплое — отдельный/внешний инстанс (НЕ в той же Docker-сети, что и этот 
+compose-стек) — подтверждено пользователем:
+
+- В NPM Proxy Host должен указывать на **`<ip-сервера>:8090`** (host-опубликованный 
+  порт), НЕ на внутреннее compose service DNS-имя (`frontend`) — оно недоступно извне 
+  этой compose-сети при внешнем NPM.
+- NPM должен проксировать на **этот frontend-контейнер** (который сам проксирует `/api` 
+  и `/ws` на `backend`), а не напрямую на `backend` — та же логика, что уже была в 
+  dev-прокси (`vite.config.ts`'s `/api`+`/ws` proxy), применённая теперь к 
+  продакшн-nginx-контейнеру внутри compose.
+- **Websocket Support обязательно включить** в NPM UI для этого Proxy Host — иначе NPM 
+  сам не прокинет `Upgrade`/`Connection`-заголовки дальше, и апгрейд до WebSocket 
+  оборвётся ещё на первом хопе (браузер → NPM), даже если `frontend/nginx.conf` 
+  настроен правильно. Два хопа апгрейда (NPM → frontend-nginx → backend) должны оба 
+  сохранять эти заголовки — внутри compose это уже обеспечено, но NPM-сторону нужно 
+  включить вручную в UI, это не настраивается через файлы этого репозитория.
+- TLS terminates at NPM — `frontend/nginx.conf` intentionally has no cert/key handling.
+
 ## C#/.NET агент — эксплуатационные заметки
 
 ### Деплой на Windows-сервер
