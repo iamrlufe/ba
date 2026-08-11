@@ -2,7 +2,7 @@
 
 ## Архитектура
 - Backend: Python/FastAPI, SQLAlchemy 2.0 async, SQLite, Docker на Ubuntu
-- Агент: C#/.NET (self-contained single-file), WinSCP-интеграция, ещё не начат
+- Агент: C#/.NET 8 (self-contained single-file, win-x64), WinSCP-интеграция, `agent/` (Core/Worker/Tests)
 - Веб-UI: React/TypeScript, ещё не начат
 - Telegram-бот: отдельный процесс, python-telegram-bot, mandatory chat_id allowlist
 
@@ -54,4 +54,4 @@ coder (реализация) → reviewer (только чтение, security-�
 - ✅ SQL verification (local path via msdb)
 - ⏳ FTP copy-integrity checker (Alert 6th FK — rebuild migration, риск потери данных)
 - ⏳ Веб-UI
-- ⏳ C#-агент
+- ✅ C#-агент (implemented, `dotnet build` clean; WinSCP/live-hosting path unverified outside Windows — см. `agent/`)

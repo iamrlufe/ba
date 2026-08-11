@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!--
+      Core is deliberately dependency-light: no WinSCP, no
+      Microsoft.Extensions.Hosting.WindowsServices, no live HttpClient usage.
+      Only the seams (interfaces) + pure logic (scheduler math, retry policy
+      factory, options validation, hashing, progress throttling) live here so
+      they can be unit tested without any I/O. See
+      BackupOrchestrator.Agent.Core.Tests.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Cron parsing + next-occurrence calculation (5-field cron, IANA timezone support). -->
+    <PackageReference Include="Cronos" Version="0.11.0" />
+    <!-- Options-pattern validation (IValidateOptions<T>) and Polly retry-policy construction live in Core;
+         these packages provide the abstractions/types referenced by Configuration/ and Retry/. -->
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" />
+    <PackageReference Include="Polly" Version="8.5.0" />
+  </ItemGroup>
+
+</Project>

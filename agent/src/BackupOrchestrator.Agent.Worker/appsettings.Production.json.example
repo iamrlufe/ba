@@ -1,0 +1,24 @@
+{
+  "_TEMPLATE_ONLY": "Copy to appsettings.Production.json on the target machine and fill in real values, OR (preferred) set everything below via Agent__* environment variables and leave this file out of the deployment entirely. This .example file must never contain a real secret and is safe to commit.",
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.Hosting.Lifetime": "Information"
+    }
+  },
+  "Agent": {
+    "ServerId": 0,
+    "AgentKey": "SET_VIA_ENV_VAR — set Agent__AgentKey, never write a real value into this file",
+    "ConnectionConfigKey": "SET_VIA_ENV_VAR — see CLAUDE.md",
+    "_ConnectionConfigKey_SECURITY_NOTE": "CRITICAL: GET /api/agents/{server_id}/connection-config is NOT SAFE for production use with real credentials yet. The backend currently enforces this endpoint with a single GLOBAL (not per-agent) ConnectionConfigKey -- any agent that knows this value can read every server's decrypted FTP/SFTP credentials, not just its own. Per-server keys are planned as the very next backend task. Do not point this agent at production connection-config credentials until that ships.",
+    "BackendBaseUrl": "https://backup-orchestrator.prod.example.internal",
+    "HeartbeatIntervalSeconds": 60,
+    "JobPollIntervalSeconds": 30,
+    "DefaultJobTimeoutMinutes": 120,
+    "OfflineQueueDirectory": "C:\\ProgramData\\BackupOrchestratorAgent\\queue",
+    "OfflineQueueMaxAgeDays": 14
+  },
+  "Serilog": {
+    "RollingFileDirectory": "C:\\ProgramData\\BackupOrchestratorAgent\\logs"
+  }
+}

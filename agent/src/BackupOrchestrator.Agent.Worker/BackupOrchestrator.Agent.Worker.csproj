@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <!--
+      net8.0-windows (not plain net8.0): required for UseWindowsService()'s
+      full Windows Service integration and the WinSCP .NET assembly.
+      BUILD NOTE: this was expected to fail to restore/build on this
+      Darwin/macOS sandbox (no Windows workload installed), with a
+      documented fallback to plain net8.0. In practice it built cleanly here:
+      net8.0-windows and the WinSCP / Microsoft.Extensions.Hosting.WindowsServices
+      NuGet packages are all managed-only and don't require the Windows
+      workload just to restore/compile on non-Windows hosts. Verified via
+      `dotnet build` below. Actually running UseWindowsService() as a real
+      Windows Service and exercising WinSCPnet.dll against a live
+      FTP/SFTP server still requires a real Windows machine; that part is
+      NOT verified in this environment, per this project's testing
+      philosophy (WinSCP/live hosting are never exercised outside Windows).
+    -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-BackupOrchestrator.Agent.Worker-42e10fd5-9b0c-420b-81a3-341d9942963e</UserSecretsId>
+
+    <!-- Self-contained single-file publish target for the eventual real
+         "dotnet publish -r win-x64 -\-self-contained -p:PublishSingleFile=true"
+         on a Windows dev machine. These settings only affect dotnet publish,
+         not dotnet build, so they are safe to leave active here. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="8.0.4" />
+    <!-- Real WinSCP .NET assembly, per spec. Not exercisable against a live
+         server in this sandbox; see note above and Transfer/WinScpTransferClient.cs. -->
+    <PackageReference Include="WinSCP" Version="6.5.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BackupOrchestrator.Agent.Core\BackupOrchestrator.Agent.Core.csproj" />
+  </ItemGroup>
+
+</Project>

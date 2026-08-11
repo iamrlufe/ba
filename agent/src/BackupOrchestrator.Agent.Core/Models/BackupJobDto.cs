@@ -1,0 +1,41 @@
+namespace BackupOrchestrator.Agent.Core.Models;
+
+/// <summary>
+/// Mirrors app/schemas/backup_job.py::BackupJobRead field-for-field (snake_case
+/// wire names, mapped via JsonPropertyName in the Worker's JSON options -- see
+/// HttpBackendApiClient). Returned from GET /api/agents/{server_id}/jobs.
+///
+/// There is deliberately NO destination/remote-path field here -- the backend
+/// BackupJob model has none. The agent decides the remote path itself; see
+/// RemotePathBuilder.
+/// </summary>
+public sealed class BackupJobDto
+{
+    public required int Id { get; init; }
+    public required int ServerId { get; init; }
+    public required int DiskId { get; init; }
+    public int? SqlInstanceId { get; init; }
+    public required bool IsEnabled { get; init; }
+    public required string Name { get; init; }
+    public string? DatabaseName { get; init; }
+    public required string SourcePath { get; init; }
+    public required string BackupType { get; init; }
+    public required string ScheduleCron { get; init; }
+    public required string Timezone { get; init; }
+    public required int RetentionDays { get; init; }
+    public required int RetentionMinCopies { get; init; }
+    public string? VerificationMethod { get; init; }
+
+    /// <summary>
+    /// Minutes, NOT seconds -- this is the watchdog timeout source. When
+    /// null, the agent falls back to AgentOptions.DefaultJobTimeoutMinutes
+    /// (see DECISIONS #3 in the spec: default 120).
+    /// </summary>
+    public int? ExpectedMaxDurationMinutes { get; init; }
+
+    public required int MissedRunGraceMinutes { get; init; }
+    public DateTimeOffset? LastRunAt { get; init; }
+    public DateTimeOffset? NextRunAt { get; init; }
+    public required DateTimeOffset CreatedAt { get; init; }
+    public required DateTimeOffset UpdatedAt { get; init; }
+}
