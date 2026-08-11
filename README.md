@@ -1,4 +1,67 @@
 
+## Deployment
+
+### Требования
+
+- Docker Engine
+- Docker Compose v2 (плагин `docker compose`, НЕ legacy standalone `docker-compose` v1) — 
+  требуется для long-form синтаксиса `depends_on: condition: service_healthy` в 
+  `docker-compose.yml`.
+
+### Первый деплой — чеклист
+
+1. Генерация секретов — у каждой обязательной переменной в `.env.example` уже есть 
+   собственный `python -c ...` one-liner в комментарии прямо над ней; отдельно 
+   дублировать их здесь не нужно.
+2. `cp .env.example .env` и `cp bot/.env.example bot/.env`, заполнить обязательные 
+   значения (важно: `FERNET_KEY` должен совпадать между backend `.env` и `bot/.env` — 
+   см. `bot/config.py`).
+3. `docker compose build`
+4. `docker compose up -d`
+5. Миграции применяются автоматически при старте контейнера (см. `docker-entrypoint.sh`) — 
+   ничего руками запускать не нужно; проверить: `docker compose logs backend | grep alembic` 
+   должен показать `Running upgrade ... -> ..., <head revision>` без ошибок.
+6. Smoke-check: `curl http://localhost:8000/healthz` → `{"status":"ok"}`; 
+   `docker compose ps` должен показывать backend как `healthy`.
+
+> `bot/.env.example` по умолчанию рассчитан на деплой не через compose 
+> (`BOT_API_BASE_URL=http://localhost:8000`, относительный `BOT_STATE_DB_PATH=./bot_state.db`). 
+> Под compose это не нужно править руками — `docker-compose.yml` уже переопределяет оба 
+> значения через `environment:` у сервиса `bot` (`BOT_API_BASE_URL=http://backend:8000`, 
+> `BOT_STATE_DB_PATH=/srv/app/data/bot_state.db`, внутрь смонтированного `bot_data`-volume). 
+> Это актуально только при запуске `bot/main.py` НЕ через `docker-compose.yml` (например, 
+> напрямую на хосте) — тогда те же два значения нужно выставить в `bot/.env` вручную.
+
+### Build context — обязательно корень репозитория
+
+И `Dockerfile` (backend), и `bot/Dockerfile` собираются ТОЛЬКО с контекстом = корень 
+репозитория (уже так настроено в `docker-compose.yml` через `build.context: .`); при 
+ручной сборке вне compose — `docker build -f Dockerfile .` из корня, не изнутри 
+поддиректории.
+
+### Хранение данных
+
+`backend_data` (`/srv/app/data`, `orchestrator.db`) и `bot_data` (`/srv/app/data`, 
+`bot_state.db`) — именованные volumes; удаление volume — деструктивная операция 
+(теряется история backup-job'ов/алертов или связки Telegram-пользователей 
+соответственно), `docker compose down` НЕ удаляет volumes по умолчанию, только 
+`docker compose down -v`.
+
+### Как применить изменения .env — шпаргалка
+
+```
+# docker compose restart НЕ перечитывает .env -- переменные окружения
+# фиксируются при создании контейнера. После правки .env или bot/.env:
+docker compose up -d --force-recreate backend
+docker compose up -d --force-recreate bot
+# (или сразу оба: docker compose up -d --force-recreate)
+```
+
+### Откат миграций
+
+Entrypoint выполняет только `alembic upgrade head` автоматически; откат — ручной: 
+`docker compose exec backend uv run alembic downgrade <rev>`.
+
 ## C#/.NET агент — эксплуатационные заметки
 
 ### Деплой на Windows-сервер
@@ -58,3 +121,9 @@ SQLite (не LiteDB) — `complete`/`backup-records` события гарант
 2. Python-чекер FTP copy-integrity — сама реализация (backend-контракт уже готов)
 3. Legacy-агент для Windows Server 2008 R2
 4. Короткоживущий WS-тикет вместо `?token=` в query string для WebSocket-подключений
+5. `bot/.env.example`: `BOT_STATE_DB_PATH`/`BOT_API_BASE_URL` по умолчанию рассчитаны на 
+   деплой не через compose (тот же класс бага, что был у backend `DATABASE_URL` — 
+   относительный путь теряется при пересоздании контейнера). Под `docker-compose.yml` 
+   это уже закрыто через `environment:`-оверрайд у сервиса `bot` (см. секцию Deployment), 
+   но сам `bot/.env.example` не исправлен (вне рамок задачи) — прямой (не через compose) 
+   запуск бота на хосте по-прежнему требует ручной правки `bot/.env`.

@@ -55,3 +55,8 @@ coder (реализация) → reviewer (только чтение, security-�
 - ⏳ FTP copy-integrity checker (Alert 6th FK — rebuild migration, риск потери данных)
 - ⏳ Веб-UI
 - ✅ C#-агент (implemented, `dotnet build` clean; WinSCP/live-hosting path unverified outside Windows — см. `agent/`)
+- ✅ Deployment-инфраструктура (`Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.dockerignore`,
+  `GET /healthz`) — см. README "Deployment". Реально проверено только продакшн-деплоем на
+  сервере grafana и локальным `docker build`/`docker run` при разработке этих файлов
+  (миграции + `/healthz` + non-root-запуск подтверждены вручную), НЕ покрыто CI/тестами —
+  считать это фактом инфраструктуры, а не автоматически проверяемым инвариантом в будущих итерациях.

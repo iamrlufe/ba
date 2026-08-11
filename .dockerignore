@@ -1,0 +1,29 @@
+# VCS / tooling
+.git/
+.github/
+.claude/
+
+# Python runtime artifacts
+.venv/
+__pycache__/
+*.py[cod]
+
+# SQLite data files and journals -- never bake data into an image
+*.db
+*.db-journal
+
+# Secrets -- env_file is mounted at runtime by compose, never baked in
+.env
+bot/.env
+
+# Huge, irrelevant to either Python image: .NET agent build output
+agent/
+
+# Not started yet (per CLAUDE.md module status)
+frontend/
+
+# Test suite and analysis-tool output -- not needed at container runtime
+tests/
+graphify-out/
+
+.DS_Store

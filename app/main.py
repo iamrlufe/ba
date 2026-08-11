@@ -27,6 +27,7 @@ from app.routers import (
     backup_jobs,
     backup_records,
     disks,
+    health,
     job_run_ws,
     job_runs,
     restore_operations,
@@ -108,3 +109,4 @@ app.include_router(restore_operations.router, prefix="/api/restore-operations")
 app.include_router(alerts.router, prefix="/api/alerts")
 app.include_router(summary.router, prefix="/api/summary")
 app.include_router(job_run_ws.router)
+app.include_router(health.router)

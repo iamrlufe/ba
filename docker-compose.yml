@@ -1,0 +1,44 @@
+# Build context for BOTH services is the repo root (".") -- backend's
+# Dockerfile does `COPY app ./app` + `COPY alembic ./alembic`, and
+# bot/Dockerfile does `COPY app ./app` + `COPY bot ./bot`, both repo-root-
+# relative. Do NOT change either service to `build: ./<dir>` shorthand,
+# which would set context=./<dir> and break both COPY instructions.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_data:/srv/app/data
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    env_file:
+      - bot/.env
+    # bot/.env.example ships defaults meant for a non-compose/host deploy
+    # (BOT_API_BASE_URL=http://localhost:8000, BOT_STATE_DB_PATH=./bot_state.db,
+    # which resolves under bot/Dockerfile's WORKDIR /srv/app, NOT the
+    # bot_data volume below -- same relative-path data-loss class of bug
+    # DATABASE_URL had). `environment:` here overrides whatever bot/.env
+    # sets, so this works correctly under compose without requiring an
+    # operator to hand-edit bot/.env.
+    environment:
+      BOT_API_BASE_URL: http://backend:8000
+      BOT_STATE_DB_PATH: /srv/app/data/bot_state.db
+    volumes:
+      - bot_data:/srv/app/data
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend_data:
+  bot_data:
