@@ -13,6 +13,16 @@ class Server(TimestampMixin, Base):
 
     Credentials are stored encrypted (see app/core/security.py) and must
     never be exposed via `app.schemas.server.ServerRead`.
+
+    The ONE sanctioned exception: `app.schemas.agent.AgentConnectionConfigResponse`,
+    returned only by `GET /api/agents/{server_id}/connection-config`
+    (app/routers/agents.py, gated by `app.core.auth.require_connection_config_key`
+    -- a separate, more restricted secret than the general X-Agent-Key).
+    That schema is built manually field-by-field from freshly-decrypted
+    plaintext in the route handler (`from_attributes=False`, never
+    `.model_validate(server, ...)`) -- see its docstring for the full
+    reasoning. Every call to that endpoint is audit-logged (see
+    `app.models.agent_credential_access_log.AgentCredentialAccessLog`).
     """
 
     __tablename__ = "servers"

@@ -20,6 +20,23 @@
 - Partial unique indexes — не более одного PENDING/RUNNING run на job, не более 
   одного ACTIVE алерта того же типа на сущность
 
+## ⚠️ ВНИМАНИЕ: GET /api/agents/{server_id}/connection-config — НЕ для продакшн-секретов
+Этот эндпоинт отдаёт РАСШИФРОВАННЫЕ FTP/SFTP-credentials агенту и защищён
+ОДНИМ глобальным shared-secret'ом (`CONNECTION_CONFIG_API_KEY`, заголовок
+`X-Connection-Config-Key`, см. `app/core/config.py` / `app/core/auth.py::require_connection_config_key`)
+— без per-server scoping/ротации. НЕЛЬЗЯ использовать с реальными продакшн-
+credentials, пока не реализованы per-server agent keys (запланировано как
+самая первая задача сразу после C#-агента). До этого момента:
+- Эндпоинт ДОЛЖЕН быть доступен только внутри существующего VPN-периметра
+  (WireGuard/Netbird) и НИКОГДА не должен быть выставлен в публичный
+  интернет — это настраивается на уровне сети (nginx/firewall) при деплое,
+  вне этого кодабазы.
+- Каждый вызов аудируется в таблице `agent_credential_access_logs`
+  (`app/models/agent_credential_access_log.py`), включая неуспешные попытки
+  — см. `GET /api/agents/credential-access-log` (admin-only).
+- `CONNECTION_CONFIG_API_KEY` — отдельный секрет от `AGENT_API_KEY`,
+  никогда не переиспользуется.
+
 ## Пайплайн разработки
 Используем субагентов: architect (только спецификация, Read/Grep/Glob) → 
 coder (реализация) → reviewer (только чтение, security-чеклист) → test-runner 

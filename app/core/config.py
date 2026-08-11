@@ -47,6 +47,21 @@ class Settings(BaseSettings):
     # provisioning/rotation in this pass) -- deliberately simple.
     AGENT_API_KEY: str
 
+    # Static shared-secret key presented via the X-Connection-Config-Key
+    # header to call GET /api/agents/{server_id}/connection-config -- the
+    # single endpoint that returns DECRYPTED FTP/SFTP credentials. This is
+    # a DELIBERATELY SEPARATE secret from AGENT_API_KEY (not reused), since
+    # this endpoint is far more sensitive than the rest of the agent-facing
+    # surface and must not share a key with it. See the prominent warning
+    # in CLAUDE.md: this is a single global shared secret with no
+    # per-server scoping yet (per-server agent keys are planned as the
+    # very next task after the .NET agent work) -- do NOT point this
+    # endpoint at real production credentials until that lands, and it
+    # must be network-restricted to the VPN perimeter (never exposed on
+    # the public internet), which is a deploy-time nginx/firewall concern,
+    # not enforced by this code.
+    CONNECTION_CONFIG_API_KEY: str
+
     # How often (seconds) the background alert-detection worker
     # (app/workers/alert_worker.py) runs its three periodic checks (missed
     # runs, agent-offline, job timeouts). Independent of the once-daily

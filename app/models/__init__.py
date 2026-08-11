@@ -15,6 +15,7 @@ from app.models.restore_operation import RestoreOperation
 from app.models.verification_run import VerificationRun
 from app.models.alert import Alert
 from app.models.user import User
+from app.models.agent_credential_access_log import AgentCredentialAccessLog
 
 __all__ = [
     "Base",
@@ -28,4 +29,5 @@ __all__ = [
     "VerificationRun",
     "Alert",
     "User",
+    "AgentCredentialAccessLog",
 ]

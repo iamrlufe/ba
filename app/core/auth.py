@@ -13,14 +13,15 @@ from datetime import UTC, datetime, timedelta
 import secrets as _secrets
 
 import jwt
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import log_agent_credential_access
 from app.core.config import settings
 from app.core.db import get_db
-from app.models.enums import UserRole
+from app.models.enums import AgentCredentialAccessAuthMethod, AgentCredentialAccessOutcome, UserRole
 from app.models.user import User
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -143,5 +144,76 @@ async def require_admin_or_agent_key(
         raise HTTPException(
             status_code=403,
             detail="Requires the X-Agent-Key header or an admin JWT",
+        )
+    return user
+
+
+async def require_connection_config_key(
+    server_id: int,
+    request: Request,
+    x_connection_config_key: str | None = Header(default=None, alias="X-Connection-Config-Key"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    session: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Gate for `GET /api/agents/{server_id}/connection-config` ONLY.
+
+    Deliberately a SEPARATE dependency from `require_admin_or_agent_key`
+    (that one is untouched and keeps gating heartbeat/jobs-list) -- this
+    endpoint returns DECRYPTED credentials and must not share a key with
+    the much more widely distributed AGENT_API_KEY. Mirrors
+    `require_admin_or_agent_key`'s exact shape: a valid X-Connection-Config-Key
+    header (checked against `settings.CONNECTION_CONFIG_API_KEY` via
+    `secrets.compare_digest`) OR an authenticated admin JWT (manual/admin
+    override, e.g. debugging). Returns the User if authenticated via JWT,
+    else None.
+
+    Every unauthorized attempt (bad/missing key with no admin JWT, or a
+    non-admin JWT) is itself audit-logged here (`AgentCredentialAccessLog`,
+    outcome=UNAUTHORIZED) before raising -- this dependency is the only
+    place in the request lifecycle with both DB session access and the
+    `server_id` path parameter *before* the request is rejected, since the
+    route handler itself never runs when this dependency raises. FastAPI
+    injects `server_id`/`request` into this dependency exactly like it
+    would into the route handler, because their names match the path's
+    declared parameters.
+    """
+    if x_connection_config_key is not None:
+        if not _secrets.compare_digest(x_connection_config_key, settings.CONNECTION_CONFIG_API_KEY):
+            await log_agent_credential_access(
+                session,
+                server_id=server_id,
+                request=request,
+                auth_method=AgentCredentialAccessAuthMethod.CONNECTION_CONFIG_KEY,
+                admin_username=None,
+                outcome=AgentCredentialAccessOutcome.UNAUTHORIZED,
+            )
+            raise HTTPException(status_code=401, detail="Invalid connection-config API key")
+        return None
+
+    try:
+        user = await get_current_user(credentials=credentials, session=session)
+    except HTTPException:
+        await log_agent_credential_access(
+            session,
+            server_id=server_id,
+            request=request,
+            auth_method=AgentCredentialAccessAuthMethod.ADMIN_JWT,
+            admin_username=None,
+            outcome=AgentCredentialAccessOutcome.UNAUTHORIZED,
+        )
+        raise
+
+    if user.role != UserRole.ADMIN:
+        await log_agent_credential_access(
+            session,
+            server_id=server_id,
+            request=request,
+            auth_method=AgentCredentialAccessAuthMethod.ADMIN_JWT,
+            admin_username=user.username,
+            outcome=AgentCredentialAccessOutcome.UNAUTHORIZED,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Requires the X-Connection-Config-Key header or an admin JWT",
         )
     return user

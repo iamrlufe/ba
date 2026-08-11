@@ -5,8 +5,18 @@ Note: there is no ORM entity `Agent` -- `server_id` here is literally
 """
 from __future__ import annotations
 
-from app.models.enums import AlertType, ServerStatus
-from tests.conftest import build_disk, build_server
+from sqlalchemy import select
+
+from app.core.config import settings
+from app.core.security import decrypt_secret, encrypt_secret
+from app.models.agent_credential_access_log import AgentCredentialAccessLog
+from app.models.enums import (
+    AgentCredentialAccessAuthMethod,
+    AgentCredentialAccessOutcome,
+    AlertType,
+    ServerStatus,
+)
+from tests.conftest import build_backup_job, build_disk, build_server
 
 
 async def test_heartbeat_missing_server_is_404(admin_client):
@@ -178,3 +188,367 @@ async def test_heartbeat_validation_error_on_bad_disk_usage(admin_client, sessio
         },
     )
     assert resp.status_code == 422
+
+
+# ==========================================================================
+# GET /api/agents/{server_id}/jobs
+# ==========================================================================
+
+
+async def _server_with_disk(session, **server_overrides):
+    server = build_server(**server_overrides)
+    session.add(server)
+    await session.commit()
+    disk = build_disk(server.id)
+    session.add(disk)
+    await session.commit()
+    return server, disk
+
+
+async def test_list_agent_jobs_missing_server_is_404(admin_client):
+    resp = await admin_client.get("/api/agents/999999/jobs")
+    assert resp.status_code == 404
+
+
+async def test_list_agent_jobs_empty_list_for_server_with_no_jobs(admin_client, session):
+    server, _disk = await _server_with_disk(session)
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
+async def test_list_agent_jobs_returns_only_enabled_jobs_for_this_server(admin_client, session):
+    server1, disk1 = await _server_with_disk(session)
+    server2, disk2 = await _server_with_disk(session)
+
+    enabled_1 = build_backup_job(server1.id, disk1.id, is_enabled=True)
+    enabled_2 = build_backup_job(server1.id, disk1.id, is_enabled=True)
+    disabled = build_backup_job(server1.id, disk1.id, is_enabled=False)
+    other_server_job = build_backup_job(server2.id, disk2.id, is_enabled=True)
+    session.add_all([enabled_1, enabled_2, disabled, other_server_job])
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/agents/{server1.id}/jobs")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 2
+    returned_ids = {item["id"] for item in body["items"]}
+    assert returned_ids == {enabled_1.id, enabled_2.id}
+    assert disabled.id not in returned_ids
+    assert other_server_job.id not in returned_ids
+    for item in body["items"]:
+        assert item["server_id"] == server1.id
+        assert item["is_enabled"] is True
+
+
+async def test_list_agent_jobs_pagination(admin_client, session):
+    server, disk = await _server_with_disk(session)
+    jobs = [build_backup_job(server.id, disk.id, is_enabled=True) for _ in range(5)]
+    session.add_all(jobs)
+    await session.commit()
+    all_ids = {j.id for j in jobs}
+
+    page1 = await admin_client.get(f"/api/agents/{server.id}/jobs", params={"limit": 2, "offset": 0})
+    page2 = await admin_client.get(f"/api/agents/{server.id}/jobs", params={"limit": 2, "offset": 2})
+    page3 = await admin_client.get(f"/api/agents/{server.id}/jobs", params={"limit": 2, "offset": 4})
+
+    assert page1.json()["total"] == 5
+    assert len(page1.json()["items"]) == 2
+    assert len(page2.json()["items"]) == 2
+    assert len(page3.json()["items"]) == 1
+
+    seen_ids = set()
+    for page in (page1, page2, page3):
+        for item in page.json()["items"]:
+            assert item["id"] not in seen_ids
+            seen_ids.add(item["id"])
+    assert seen_ids == all_ids
+
+
+# ==========================================================================
+# GET /api/agents/{server_id}/connection-config
+# ==========================================================================
+
+
+def _connection_config_headers() -> dict:
+    return {"X-Connection-Config-Key": settings.CONNECTION_CONFIG_API_KEY}
+
+
+async def _server_with_credentials(session, **overrides):
+    defaults = dict(
+        username_encrypted=encrypt_secret("agent-user"),
+        password_encrypted=encrypt_secret("agent-pw-s3cr3t"),
+        ssh_private_key_encrypted=encrypt_secret("-----BEGIN KEY-----fakekeydata-----END KEY-----"),
+    )
+    defaults.update(overrides)
+    server = build_server(**defaults)
+    session.add(server)
+    await session.commit()
+    await session.refresh(server)
+    return server
+
+
+async def _last_access_log_row(session, server_id: int) -> AgentCredentialAccessLog:
+    stmt = (
+        select(AgentCredentialAccessLog)
+        .where(AgentCredentialAccessLog.server_id == server_id)
+        .order_by(AgentCredentialAccessLog.id.desc())
+    )
+    row = (await session.execute(stmt)).scalars().first()
+    assert row is not None, f"no AgentCredentialAccessLog row found for server_id={server_id}"
+    return row
+
+
+async def test_connection_config_happy_path_round_trip(client, session):
+    server = await _server_with_credentials(session)
+
+    resp = await client.get(
+        f"/api/agents/{server.id}/connection-config", headers=_connection_config_headers()
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["server_id"] == server.id
+    assert body["host"] == server.host
+    assert body["port"] == server.port
+    assert body["protocol"] == server.protocol.value
+    assert body["username"] == "agent-user"
+    assert body["password"] == "agent-pw-s3cr3t"
+    assert body["ssh_private_key"] == "-----BEGIN KEY-----fakekeydata-----END KEY-----"
+
+    # The ciphertext form must never leak into the response.
+    assert server.password_encrypted not in resp.text
+    assert server.username_encrypted not in resp.text
+    assert server.ssh_private_key_encrypted not in resp.text
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.SUCCESS
+    assert row.auth_method == AgentCredentialAccessAuthMethod.CONNECTION_CONFIG_KEY
+    assert row.server_id == server.id
+
+
+async def test_connection_config_404_for_missing_server(client, session):
+    resp = await client.get(
+        "/api/agents/999999/connection-config", headers=_connection_config_headers()
+    )
+    assert resp.status_code == 404
+
+    row = await _last_access_log_row(session, 999999)
+    assert row.outcome == AgentCredentialAccessOutcome.NOT_FOUND
+    assert row.auth_method == AgentCredentialAccessAuthMethod.CONNECTION_CONFIG_KEY
+
+
+async def test_connection_config_409_for_soft_deleted_server(client, session):
+    server = await _server_with_credentials(session, is_deleted=True)
+
+    resp = await client.get(
+        f"/api/agents/{server.id}/connection-config", headers=_connection_config_headers()
+    )
+    assert resp.status_code == 409
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.DENIED_DELETED
+
+
+async def test_connection_config_403_for_disabled_server_but_heartbeat_still_works(client, session):
+    """Asymmetric-by-design: heartbeat still accepts a DISABLED server
+    (see test_heartbeat_disabled_server_never_reactivated above), but
+    connection-config must reject it outright. Regression guard for that
+    asymmetry -- see app/routers/agents.py::get_agent_connection_config
+    docstring and app/core/auth.py::require_connection_config_key.
+    """
+    server = await _server_with_credentials(session, status=ServerStatus.DISABLED)
+
+    config_resp = await client.get(
+        f"/api/agents/{server.id}/connection-config", headers=_connection_config_headers()
+    )
+    assert config_resp.status_code == 403
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.DENIED_DISABLED
+
+    heartbeat_resp = await client.post(
+        f"/api/agents/{server.id}/heartbeat",
+        json={"reachable": True},
+        headers={"X-Agent-Key": settings.AGENT_API_KEY},
+    )
+    assert heartbeat_resp.status_code == 200
+    assert heartbeat_resp.json()["server"]["status"] == "DISABLED"
+
+
+async def test_connection_config_409_for_no_credentials_configured(client, session):
+    server = build_server()
+    session.add(server)
+    await session.commit()
+
+    resp = await client.get(
+        f"/api/agents/{server.id}/connection-config", headers=_connection_config_headers()
+    )
+    assert resp.status_code == 409
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.DENIED_NO_CREDENTIALS
+
+
+async def test_connection_config_missing_key_no_jwt_is_401(client, session):
+    server = await _server_with_credentials(session)
+
+    resp = await client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 401
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.UNAUTHORIZED
+    assert row.auth_method == AgentCredentialAccessAuthMethod.ADMIN_JWT
+    assert row.admin_username is None
+
+
+async def test_connection_config_bad_key_no_jwt_is_401(client, session):
+    server = await _server_with_credentials(session)
+
+    resp = await client.get(
+        f"/api/agents/{server.id}/connection-config",
+        headers={"X-Connection-Config-Key": "not-the-real-key"},
+    )
+    assert resp.status_code == 401
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.UNAUTHORIZED
+    assert row.auth_method == AgentCredentialAccessAuthMethod.CONNECTION_CONFIG_KEY
+
+
+async def test_connection_config_valid_agent_key_alone_does_not_authorize(client, session):
+    """The whole point of the separate secret: a valid X-Agent-Key (the
+    widely-distributed general agent key) must NOT satisfy
+    require_connection_config_key on its own.
+    """
+    server = await _server_with_credentials(session)
+
+    resp = await client.get(
+        f"/api/agents/{server.id}/connection-config",
+        headers={"X-Agent-Key": settings.AGENT_API_KEY},
+    )
+    assert resp.status_code == 401
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.UNAUTHORIZED
+
+
+async def test_connection_config_operator_jwt_is_403(operator_client, session):
+    server = await _server_with_credentials(session)
+
+    resp = await operator_client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 403
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.UNAUTHORIZED
+    assert row.auth_method == AgentCredentialAccessAuthMethod.ADMIN_JWT
+    assert row.admin_username == "operator-tester"
+
+
+async def test_connection_config_admin_jwt_bypasses_key_header(admin_client, session):
+    server = await _server_with_credentials(session)
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 200
+    assert resp.json()["password"] == "agent-pw-s3cr3t"
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.SUCCESS
+    assert row.auth_method == AgentCredentialAccessAuthMethod.ADMIN_JWT
+    assert row.admin_username == "admin-tester"
+
+
+async def test_connection_config_decryption_failed_is_500_and_audited(client, session):
+    server = await _server_with_credentials(session)
+    # Corrupt the stored ciphertext directly (simulates a bad FERNET_KEY
+    # rotation or bit-rot) -- decrypt_secret must raise InvalidToken.
+    server.password_encrypted = "not-a-valid-fernet-token"
+    await session.commit()
+
+    resp = await client.get(
+        f"/api/agents/{server.id}/connection-config", headers=_connection_config_headers()
+    )
+    assert resp.status_code == 500
+
+    row = await _last_access_log_row(session, server.id)
+    assert row.outcome == AgentCredentialAccessOutcome.DECRYPTION_FAILED
+    assert row.auth_method == AgentCredentialAccessAuthMethod.CONNECTION_CONFIG_KEY
+
+
+# ==========================================================================
+# GET /api/agents/credential-access-log
+# ==========================================================================
+
+
+async def test_credential_access_log_requires_admin_403_for_operator(operator_client):
+    resp = await operator_client.get("/api/agents/credential-access-log")
+    assert resp.status_code == 403
+
+
+async def test_credential_access_log_401_for_no_auth(client):
+    resp = await client.get("/api/agents/credential-access-log")
+    assert resp.status_code == 401
+
+
+async def test_credential_access_log_pagination(admin_client, session):
+    server = await _server_with_credentials(session)
+    # Generate 5 distinct access-log rows by calling the endpoint 5 times
+    # with alternating valid/invalid keys.
+    for i in range(5):
+        headers = (
+            _connection_config_headers() if i % 2 == 0 else {"X-Connection-Config-Key": "bad"}
+        )
+        await admin_client.get(f"/api/agents/{server.id}/connection-config", headers=headers)
+
+    page1 = await admin_client.get(
+        "/api/agents/credential-access-log", params={"server_id": server.id, "limit": 2, "offset": 0}
+    )
+    page2 = await admin_client.get(
+        "/api/agents/credential-access-log", params={"server_id": server.id, "limit": 2, "offset": 2}
+    )
+    assert page1.status_code == 200
+    assert page1.json()["total"] == 5
+    assert len(page1.json()["items"]) == 2
+    assert len(page2.json()["items"]) == 2
+    page1_ids = {i["id"] for i in page1.json()["items"]}
+    page2_ids = {i["id"] for i in page2.json()["items"]}
+    assert page1_ids.isdisjoint(page2_ids)
+
+
+async def test_credential_access_log_server_id_filter(admin_client, session):
+    server1 = await _server_with_credentials(session)
+    server2 = await _server_with_credentials(session)
+
+    await admin_client.get(
+        f"/api/agents/{server1.id}/connection-config", headers=_connection_config_headers()
+    )
+    await admin_client.get(
+        f"/api/agents/{server2.id}/connection-config", headers=_connection_config_headers()
+    )
+
+    resp = await admin_client.get(
+        "/api/agents/credential-access-log", params={"server_id": server1.id}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] >= 1
+    assert all(item["server_id"] == server1.id for item in body["items"])
+
+
+async def test_credential_access_log_never_leaks_secret_or_raw_key(admin_client, session):
+    server = await _server_with_credentials(session)
+
+    resp = await admin_client.get(
+        f"/api/agents/{server.id}/connection-config", headers=_connection_config_headers()
+    )
+    assert resp.status_code == 200
+
+    log_resp = await admin_client.get("/api/agents/credential-access-log")
+    assert log_resp.status_code == 200
+    assert "agent-pw-s3cr3t" not in log_resp.text
+    assert "agent-user" not in log_resp.text
+    assert "fakekeydata" not in log_resp.text
+    assert settings.CONNECTION_CONFIG_API_KEY not in log_resp.text
+    assert server.password_encrypted not in log_resp.text

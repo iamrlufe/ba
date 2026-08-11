@@ -116,6 +116,32 @@ class UserRole(str, Enum):
     OPERATOR = "OPERATOR"
 
 
+class AgentCredentialAccessAuthMethod(str, Enum):
+    """How a caller authenticated to
+    `GET /api/agents/{server_id}/connection-config` -- backs
+    `AgentCredentialAccessLog.auth_method` (app/models/agent_credential_access_log.py).
+    """
+
+    CONNECTION_CONFIG_KEY = "connection_config_key"
+    ADMIN_JWT = "admin_jwt"
+
+
+class AgentCredentialAccessOutcome(str, Enum):
+    """Result of a call to
+    `GET /api/agents/{server_id}/connection-config` -- backs
+    `AgentCredentialAccessLog.outcome`. Exactly one row is written per
+    call, regardless of outcome (success or any denial).
+    """
+
+    SUCCESS = "success"
+    DENIED_DISABLED = "denied_disabled"
+    DENIED_DELETED = "denied_deleted"
+    DENIED_NO_CREDENTIALS = "denied_no_credentials"
+    NOT_FOUND = "not_found"
+    UNAUTHORIZED = "unauthorized"
+    DECRYPTION_FAILED = "decryption_failed"
+
+
 class VerificationType(str, Enum):
     """Discriminates what kind of check a VerificationRun row represents.
 

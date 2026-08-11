@@ -650,3 +650,121 @@ async def test_heartbeat_no_auth_at_all_is_401(client, session):
     server = await _server(session)
     resp = await client.post(f"/api/agents/{server.id}/heartbeat", json={"reachable": True})
     assert resp.status_code == 401
+
+
+# --- GET /api/agents/{server_id}/jobs ----------------------------------------
+
+
+async def test_list_agent_jobs_valid_agent_key_succeeds_without_jwt(client, session):
+    server = await _server(session)
+    client.headers["X-Agent-Key"] = settings.AGENT_API_KEY
+    resp = await client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 200
+
+
+async def test_list_agent_jobs_admin_jwt_succeeds_without_agent_key(admin_client, session):
+    server = await _server(session)
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 200
+
+
+async def test_list_agent_jobs_operator_jwt_is_403(operator_client, session):
+    server = await _server(session)
+    resp = await operator_client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 403
+
+
+async def test_list_agent_jobs_wrong_agent_key_is_401(client, session):
+    server = await _server(session)
+    client.headers["X-Agent-Key"] = "not-the-real-key"
+    resp = await client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 401
+
+
+async def test_list_agent_jobs_no_auth_at_all_is_401(client, session):
+    server = await _server(session)
+    resp = await client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 401
+
+
+# ==========================================================================
+# 4. require_connection_config_key matrix -- GET
+#    /api/agents/{server_id}/connection-config ONLY. This is a SEPARATE
+#    dependency/secret from require_admin_or_agent_key above (see
+#    app/core/auth.py::require_connection_config_key docstring) --
+#    business-logic + audit-log coverage for this endpoint lives in
+#    tests/test_routers_agents.py; this section only re-confirms the auth
+#    gate itself, including the key-confusion case (X-Agent-Key alone must
+#    NOT satisfy this dependency).
+# ==========================================================================
+
+
+async def _server_with_creds(session):
+    from app.core.security import encrypt_secret
+
+    server = build_server(password_encrypted=encrypt_secret("matrix-pw"))
+    session.add(server)
+    await session.commit()
+    return server
+
+
+async def test_connection_config_valid_connection_key_succeeds_without_jwt(client, session):
+    server = await _server_with_creds(session)
+    client.headers["X-Connection-Config-Key"] = settings.CONNECTION_CONFIG_API_KEY
+    resp = await client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 200
+
+
+async def test_connection_config_admin_jwt_succeeds_without_connection_key(admin_client, session):
+    server = await _server_with_creds(session)
+    resp = await admin_client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 200
+
+
+async def test_connection_config_operator_jwt_is_403(operator_client, session):
+    server = await _server_with_creds(session)
+    resp = await operator_client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 403
+
+
+async def test_connection_config_wrong_connection_key_is_401(client, session):
+    server = await _server_with_creds(session)
+    client.headers["X-Connection-Config-Key"] = "not-the-real-key"
+    resp = await client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 401
+
+
+async def test_connection_config_no_auth_at_all_is_401(client, session):
+    server = await _server_with_creds(session)
+    resp = await client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 401
+
+
+async def test_connection_config_valid_agent_key_alone_is_401(client, session):
+    """The whole point of the separate secret: a valid general X-Agent-Key
+    must not satisfy require_connection_config_key on its own.
+    """
+    server = await _server_with_creds(session)
+    client.headers["X-Agent-Key"] = settings.AGENT_API_KEY
+    resp = await client.get(f"/api/agents/{server.id}/connection-config")
+    assert resp.status_code == 401
+
+
+# ==========================================================================
+# 5. GET /api/agents/credential-access-log -- admin-only (require_role)
+# ==========================================================================
+
+
+async def test_credential_access_log_operator_jwt_is_403(operator_client):
+    resp = await operator_client.get("/api/agents/credential-access-log")
+    assert resp.status_code == 403
+
+
+async def test_credential_access_log_no_auth_at_all_is_401(client):
+    resp = await client.get("/api/agents/credential-access-log")
+    assert resp.status_code == 401
+
+
+async def test_credential_access_log_admin_jwt_ok(admin_client):
+    resp = await admin_client.get("/api/agents/credential-access-log")
+    assert resp.status_code == 200
