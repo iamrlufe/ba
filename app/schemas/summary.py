@@ -1,10 +1,10 @@
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import JobRunStatus
 from app.schemas.alert import AlertRead
+from app.schemas.common import UtcDatetime
 
 DailyJobStatusValue = Literal["OK", "FAIL", "MISSED"]
 
@@ -17,7 +17,7 @@ class DailyJobStatus(BaseModel):
     status: DailyJobStatusValue
     last_run_id: int | None
     last_run_status: JobRunStatus | None
-    last_run_finished_at: datetime | None
+    last_run_finished_at: UtcDatetime | None
 
 
 class DailySummaryCounts(BaseModel):
@@ -32,9 +32,9 @@ class DailySummaryCounts(BaseModel):
 class DailySummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    generated_at: datetime
-    window_start: datetime
-    window_end: datetime
+    generated_at: UtcDatetime
+    window_start: UtcDatetime
+    window_end: UtcDatetime
     active_alerts: list[AlertRead]
     jobs: list[DailyJobStatus]
     counts: DailySummaryCounts

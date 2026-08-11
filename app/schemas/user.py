@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.enums import UserRole
+from app.schemas.common import UtcDatetime
 
 
 class UserCreate(BaseModel):
@@ -28,8 +27,8 @@ class UserRead(BaseModel):
     role: UserRole
     is_active: bool
     telegram_user_id: int | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
     # hashed_password intentionally excluded
     # telegram_bot_token_encrypted intentionally excluded -- encrypted secrets
     # are never echoed back in a response schema (see app.models.user.User).

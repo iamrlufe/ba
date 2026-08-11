@@ -174,3 +174,14 @@ SQLite (не LiteDB) — `complete`/`backup-records` события гарант
    это уже закрыто через `environment:`-оверрайд у сервиса `bot` (см. секцию Deployment), 
    но сам `bot/.env.example` не исправлен (вне рамок задачи) — прямой (не через compose) 
    запуск бота на хосте по-прежнему требует ручной правки `bot/.env`.
+6. `CopyVerificationReportRequest.checked_at` (`app/schemas/copy_verification.py`) — 
+   входящее datetime-поле от агента без `normalize_to_utc`-валидатора, в отличие от 
+   остальных request-схем (`JobRunUpdate`, `RestoreOperationUpdate`). Тот же класс бага, 
+   что был исправлен для исходящей UTC-сериализации (см. `UtcDatetime` в 
+   `app/schemas/common.py`), но с другой стороны — не-UTC offset от агента может 
+   незаметно испортить последующие сравнения этого значения. Обнаружено при ревью 
+   UTC-фикса, не исправлено (вне рамок задачи).
+7. `Alert.delivered_web_at` (`app/models/alert.py`) — существующая колонка в БД, ни разу 
+   не выставляется в `AlertRead`. Неясно, оговорка это или сознательное решение 
+   (в модели есть `channel: AlertChannel`, предполагающий web-доставку) — обнаружено при 
+   ревью UTC-фикса, не исправлено (вне рамок задачи).

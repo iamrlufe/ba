@@ -1,6 +1,6 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.schemas.common import UtcDatetime
 
 
 class BackupRecordBase(BaseModel):
@@ -42,8 +42,8 @@ class BackupRecordRead(BackupRecordBase):
     id: int
     backup_job_id: int
     job_run_id: int | None
-    detected_at: datetime
-    updated_at: datetime
+    detected_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class BackupRecordSyncResult(BaseModel):

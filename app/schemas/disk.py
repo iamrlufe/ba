@@ -1,6 +1,6 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+
+from app.schemas.common import UtcDatetime
 
 
 class DiskBase(BaseModel):
@@ -47,10 +47,10 @@ class DiskRead(DiskBase):
     server_id: int
     total_bytes: int | None
     free_bytes: int | None
-    usage_checked_at: datetime | None
+    usage_checked_at: UtcDatetime | None
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
     @computed_field  # type: ignore[prop-decorator]
     @property

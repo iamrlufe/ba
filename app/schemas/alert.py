@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import AlertChannel, AlertSeverity, AlertStatus, AlertType
+from app.schemas.common import UtcDatetime
 
 # NOTE: there is no public AlertCreate schema -- alerts are only ever
 # created by the system (detectors / scheduler), never directly by an API
@@ -41,10 +40,10 @@ class AlertRead(BaseModel):
     message: str
     status: AlertStatus
     channel: AlertChannel
-    delivered_telegram_at: datetime | None
+    delivered_telegram_at: UtcDatetime | None
     acknowledged_by: str | None
-    acknowledged_at: datetime | None
-    resolved_at: datetime | None
+    acknowledged_at: UtcDatetime | None
+    resolved_at: UtcDatetime | None
     resolved_note: str | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime

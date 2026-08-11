@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import ProtocolType, ServerStatus
+from app.schemas.common import UtcDatetime
 
 
 class ServerBase(BaseModel):
@@ -58,7 +57,7 @@ class ServerRead(ServerBase):
     status: ServerStatus
     credentials_set: bool
     ssh_key_set: bool
-    last_seen_at: datetime | None
+    last_seen_at: UtcDatetime | None
     is_deleted: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime

@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import BackupType
+from app.schemas.common import UtcDatetime
 
 
 class BackupJobBase(BaseModel):
@@ -83,7 +82,7 @@ class BackupJobRead(BackupJobBase):
     disk_id: int
     sql_instance_id: int | None
     is_enabled: bool
-    last_run_at: datetime | None
-    next_run_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
+    last_run_at: UtcDatetime | None
+    next_run_at: UtcDatetime | None
+    created_at: UtcDatetime
+    updated_at: UtcDatetime

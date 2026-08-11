@@ -9,6 +9,7 @@ from app.models.enums import (
     RestoreStatus,
 )
 from app.schemas._datetime import normalize_to_utc
+from app.schemas.common import UtcDatetime
 
 
 class RestoreOperationBase(BaseModel):
@@ -89,12 +90,12 @@ class RestoreOperationRead(RestoreOperationBase):
     requested_by: str
     requested_by_channel: RequestChannel
     status: RestoreStatus
-    requested_at: datetime
-    started_at: datetime | None
-    completed_at: datetime | None
+    requested_at: UtcDatetime
+    started_at: UtcDatetime | None
+    completed_at: UtcDatetime | None
     error_message: str | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
     # log intentionally excluded -- see RestoreOperationLogRead.
 
 

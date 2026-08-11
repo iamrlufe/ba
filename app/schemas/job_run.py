@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.enums import JOB_RUN_TERMINAL_STATUSES, JobRunStatus, VerificationStatus
 from app.schemas._datetime import normalize_to_utc
+from app.schemas.common import UtcDatetime
 
 
 class JobRunTriggerRequest(BaseModel):
@@ -110,8 +111,8 @@ class JobRunRead(BaseModel):
     backup_job_id: int
     status: JobRunStatus
     triggered_by: str
-    started_at: datetime | None
-    finished_at: datetime | None
+    started_at: UtcDatetime | None
+    finished_at: UtcDatetime | None
     file_path: str | None
     file_size_bytes: int | None
     duration_seconds: int | None
@@ -121,7 +122,7 @@ class JobRunRead(BaseModel):
     percent: int | None
     current_file: str | None
     bytes_done: int | None
-    created_at: datetime
+    created_at: UtcDatetime
     # log_output intentionally excluded -- see JobRunLogRead.
 
 
@@ -136,6 +137,6 @@ class JobRunSummary(BaseModel):
 
     id: int
     status: JobRunStatus
-    started_at: datetime | None
-    finished_at: datetime | None
+    started_at: UtcDatetime | None
+    finished_at: UtcDatetime | None
     verification_status: VerificationStatus

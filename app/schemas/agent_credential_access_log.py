@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import AgentCredentialAccessAuthMethod, AgentCredentialAccessOutcome
+from app.schemas.common import UtcDatetime
 
 
 class AgentCredentialAccessLogRead(BaseModel):
@@ -18,7 +17,7 @@ class AgentCredentialAccessLogRead(BaseModel):
 
     id: int
     server_id: int
-    accessed_at: datetime
+    accessed_at: UtcDatetime
     requester_ip: str | None
     auth_method: AgentCredentialAccessAuthMethod
     admin_username: str | None

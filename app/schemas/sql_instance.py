@@ -1,8 +1,7 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import ServerStatus
+from app.schemas.common import UtcDatetime
 
 
 class SqlInstanceBase(BaseModel):
@@ -80,7 +79,7 @@ class SqlInstanceRead(SqlInstanceBase):
     server_id: int | None
     credentials_set: bool
     status: ServerStatus
-    last_verified_connection_at: datetime | None
+    last_verified_connection_at: UtcDatetime | None
     is_deleted: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
