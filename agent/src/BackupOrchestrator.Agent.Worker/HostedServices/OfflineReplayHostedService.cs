@@ -2,6 +2,7 @@ using System.Text.Json;
 using BackupOrchestrator.Agent.Core.Configuration;
 using BackupOrchestrator.Agent.Core.Contracts;
 using BackupOrchestrator.Agent.Core.Models;
+using BackupOrchestrator.Agent.Core.Replay;
 using Microsoft.Extensions.Options;
 
 namespace BackupOrchestrator.Agent.Worker.HostedServices;
@@ -13,71 +14,138 @@ namespace BackupOrchestrator.Agent.Worker.HostedServices;
 /// while an earlier one is still stuck (DECISIONS #2: real row DELETE on
 /// success, never reordered/rewritten). Also runs age-eviction
 /// (DECISIONS #4) once per pass before attempting any replay.
+///
+/// Pending events within a pass are replayed in bounded batches
+/// (OfflineReplayBatchSize) with a short pause between batches
+/// (OfflineReplayBatchPauseSeconds), and the delay between passes escalates
+/// via OfflineReplayBackoffCalculator after consecutive failed passes --
+/// both mitigate the connection storm a large backlog would otherwise fire
+/// in one uninterrupted burst on reconnect after a long outage.
 /// </summary>
 public sealed class OfflineReplayHostedService : BackgroundService
 {
     /// <summary>
     /// Not exposed via AgentOptions in the spec -- kept independent of
     /// HeartbeatIntervalSeconds/JobPollIntervalSeconds so replay cadence can
-    /// be tuned separately if needed later.
+    /// be tuned separately if needed later. Also used as the base interval
+    /// for OfflineReplayBackoffCalculator.
     /// </summary>
     private static readonly TimeSpan ReplayInterval = TimeSpan.FromSeconds(30);
 
     private readonly IOfflineEventQueue _offlineQueue;
     private readonly IBackendApiClient _backendApiClient;
+    private readonly IOfflineReplayPacer _pacer;
     private readonly AgentOptions _options;
     private readonly ILogger<OfflineReplayHostedService> _logger;
+    private readonly OfflineReplayBackoffCalculator _backoff;
 
     public OfflineReplayHostedService(
         IOfflineEventQueue offlineQueue,
         IBackendApiClient backendApiClient,
+        IOfflineReplayPacer pacer,
         IOptions<AgentOptions> options,
         ILogger<OfflineReplayHostedService> logger)
     {
         _offlineQueue = offlineQueue;
         _backendApiClient = backendApiClient;
+        _pacer = pacer;
         _options = options.Value;
         _logger = logger;
+        _backoff = new OfflineReplayBackoffCalculator(
+            ReplayInterval,
+            _options.OfflineReplayBackoffMultiplier,
+            TimeSpan.FromSeconds(_options.OfflineReplayMaxBackoffSeconds));
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(ReplayInterval);
-
-        do
+        while (!stoppingToken.IsCancellationRequested)
         {
-            await ReplayOnceAsync(stoppingToken);
+            var completedFully = await ReplayOnceAsync(stoppingToken);
+
+            if (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _backoff.RecordPassOutcome(completedFully);
+
+            try
+            {
+                await _pacer.PauseAsync(_backoff.NextPassDelay(), stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
         }
-        while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 
-    internal async Task ReplayOnceAsync(CancellationToken cancellationToken)
+    internal async Task<bool> ReplayOnceAsync(CancellationToken cancellationToken)
     {
         await _offlineQueue.EvictExpiredAsync(TimeSpan.FromDays(_options.OfflineQueueMaxAgeDays), cancellationToken);
 
         var pending = await _offlineQueue.GetPendingAsync(cancellationToken);
         if (pending.Count == 0)
         {
-            return;
+            return true;
         }
 
         _logger.LogInformation("Replaying {Count} queued offline events", pending.Count);
 
-        foreach (var queuedEvent in pending)
+        var batches = pending.Chunk(_options.OfflineReplayBatchSize);
+        var batchCount = (pending.Count + _options.OfflineReplayBatchSize - 1) / _options.OfflineReplayBatchSize;
+        var batchIndex = 0;
+
+        foreach (var batch in batches)
         {
-            if (cancellationToken.IsCancellationRequested)
+            batchIndex++;
+
+            foreach (var queuedEvent in batch)
             {
-                return;
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return false;
+                }
+
+                bool replayed;
+                try
+                {
+                    replayed = await TryReplayAsync(queuedEvent, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return false;
+                }
+
+                if (!replayed)
+                {
+                    // Preserve FIFO order: stop this pass rather than skip ahead
+                    // to a later event while an earlier one is still stuck.
+                    return false;
+                }
             }
 
-            var replayed = await TryReplayAsync(queuedEvent, cancellationToken);
-            if (!replayed)
+            if (cancellationToken.IsCancellationRequested)
             {
-                // Preserve FIFO order: stop this pass rather than skip ahead
-                // to a later event while an earlier one is still stuck.
-                break;
+                return false;
+            }
+
+            var isLastBatch = batchIndex >= batchCount;
+            if (!isLastBatch)
+            {
+                try
+                {
+                    await _pacer.PauseAsync(TimeSpan.FromSeconds(_options.OfflineReplayBatchPauseSeconds), cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return false;
+                }
             }
         }
+
+        return true;
     }
 
     private async Task<bool> TryReplayAsync(QueuedEvent queuedEvent, CancellationToken cancellationToken)

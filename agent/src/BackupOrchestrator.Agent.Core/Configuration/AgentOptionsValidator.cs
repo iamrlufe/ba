@@ -148,6 +148,26 @@ public sealed class AgentOptionsValidator : IValidateOptions<AgentOptions>
                 "still be in flight when the next readiness-detection cycle is due to start.");
         }
 
+        if (options.OfflineReplayBatchSize < 1)
+        {
+            errors.Add($"{nameof(AgentOptions.OfflineReplayBatchSize)} must be at least 1.");
+        }
+
+        if (options.OfflineReplayBatchPauseSeconds < 0)
+        {
+            errors.Add($"{nameof(AgentOptions.OfflineReplayBatchPauseSeconds)} must not be negative.");
+        }
+
+        if (options.OfflineReplayBackoffMultiplier < 1.0)
+        {
+            errors.Add($"{nameof(AgentOptions.OfflineReplayBackoffMultiplier)} must be at least 1.0.");
+        }
+
+        if (options.OfflineReplayMaxBackoffSeconds < 30)
+        {
+            errors.Add($"{nameof(AgentOptions.OfflineReplayMaxBackoffSeconds)} must be at least 30 seconds.");
+        }
+
         return errors.Count > 0
             ? ValidateOptionsResult.Fail(errors)
             : ValidateOptionsResult.Success;

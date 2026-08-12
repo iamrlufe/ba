@@ -63,6 +63,7 @@ builder.Services.AddSingleton<JobScheduler>();
 
 // ---- I/O implementations (Worker-only) -----------------------------------
 builder.Services.AddSingleton<IOfflineEventQueue, SqliteOfflineEventQueue>();
+builder.Services.AddSingleton<IOfflineReplayPacer, TaskDelayOfflineReplayPacer>();
 builder.Services.AddSingleton<IBackupTransferClient, WinScpTransferClient>();
 builder.Services.AddSingleton<IProcessSnapshotProvider, ProcessSnapshotProvider>();
 builder.Services.AddSingleton<ICpuUsageSampler, CpuUsageSampler>();

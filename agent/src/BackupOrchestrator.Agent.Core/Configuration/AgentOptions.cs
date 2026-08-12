@@ -94,4 +94,24 @@ public sealed class AgentOptions
     /// WATCH-detected file before the agent gives up on that specific file (only a
     /// newer file can supersede it after this).</summary>
     public int MaxWatchTransferAttempts { get; set; } = 5;
+
+    /// <summary>Number of offline-queue events replayed back-to-back before pausing
+    /// (DECISIONS: replay-storm mitigation). Breaks a large backlog into bursts
+    /// small enough that a reconnect after a long outage doesn't fire hundreds of
+    /// requests in one uninterrupted burst.</summary>
+    public int OfflineReplayBatchSize { get; set; } = 20;
+
+    /// <summary>Pause between batches within a single replay pass. Deliberately
+    /// NOT a per-item delay -- see OfflineReplayHostedService.</summary>
+    public int OfflineReplayBatchPauseSeconds { get; set; } = 3;
+
+    /// <summary>Multiplier applied to the base 30s replay-pass cadence for every
+    /// consecutive pass that stopped early on a BackendUnavailableException.
+    /// Distinct from OfflineReplayBatchPauseSeconds (fixed, within-pass) and from
+    /// RetryPolicyFactory (per-HTTP-call, within-request).</summary>
+    public double OfflineReplayBackoffMultiplier { get; set; } = 2.0;
+
+    /// <summary>Ceiling on the escalated inter-pass delay -- never wait longer
+    /// than this between replay passes even after many consecutive failures.</summary>
+    public int OfflineReplayMaxBackoffSeconds { get; set; } = 300; // 5 min
 }
