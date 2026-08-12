@@ -102,6 +102,52 @@ public sealed class AgentOptionsValidator : IValidateOptions<AgentOptions>
                 "collect more than one sample per heartbeat window, defeating interval averaging.");
         }
 
+        if (options.WatchReconciliationIntervalSeconds <= 0)
+        {
+            errors.Add($"{nameof(AgentOptions.WatchReconciliationIntervalSeconds)} must be positive.");
+        }
+
+        if (options.FileLockCheckIntervalSeconds <= 0)
+        {
+            errors.Add($"{nameof(AgentOptions.FileLockCheckIntervalSeconds)} must be positive.");
+        }
+
+        if (options.FileLockCheckTimeoutMinutes <= 0)
+        {
+            errors.Add($"{nameof(AgentOptions.FileLockCheckTimeoutMinutes)} must be positive.");
+        }
+
+        if (options.MsdbConnectTimeoutSeconds <= 0)
+        {
+            errors.Add($"{nameof(AgentOptions.MsdbConnectTimeoutSeconds)} must be positive.");
+        }
+
+        if (options.MsdbCommandTimeoutSeconds <= 0)
+        {
+            errors.Add($"{nameof(AgentOptions.MsdbCommandTimeoutSeconds)} must be positive.");
+        }
+
+        if (options.MaxWatchTransferAttempts <= 0)
+        {
+            errors.Add($"{nameof(AgentOptions.MaxWatchTransferAttempts)} must be positive.");
+        }
+
+        if (options.FileLockCheckTimeoutMinutes * 60 < options.FileLockCheckIntervalSeconds * 5)
+        {
+            errors.Add(
+                $"{nameof(AgentOptions.FileLockCheckTimeoutMinutes)} must allow for at least 5 " +
+                $"{nameof(AgentOptions.FileLockCheckIntervalSeconds)} probes before timing out -- otherwise the " +
+                "readiness loop would time out before it ever got a meaningful number of chances to observe the file unlock.");
+        }
+
+        if (options.MsdbConnectTimeoutSeconds > options.FileLockCheckIntervalSeconds)
+        {
+            errors.Add(
+                $"{nameof(AgentOptions.MsdbConnectTimeoutSeconds)} must not exceed " +
+                $"{nameof(AgentOptions.FileLockCheckIntervalSeconds)} -- otherwise a single msdb connect attempt could " +
+                "still be in flight when the next readiness-detection cycle is due to start.");
+        }
+
         return errors.Count > 0
             ? ValidateOptionsResult.Fail(errors)
             : ValidateOptionsResult.Success;

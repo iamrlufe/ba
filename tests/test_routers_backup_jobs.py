@@ -6,7 +6,8 @@ disk's server_id doesn't match the payload's server_id.
 """
 from __future__ import annotations
 
-from app.models.enums import JobRunStatus, VerificationRunStatus
+from app.core.config import settings
+from app.models.enums import AlertStatus, AlertType, JobRunStatus, TriggerMode, VerificationRunStatus
 from app.routers import backup_jobs as backup_jobs_module
 from app.workers.backup_verification import create_pending_verification_run
 from tests.conftest import (
@@ -377,3 +378,263 @@ async def test_delete_backup_job_with_terminal_verification_run_succeeds(admin_c
 
     resp = await admin_client.delete(f"/api/backup-jobs/{job.id}")
     assert resp.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# PATCH /{id} -- trigger_mode switching (WATCH trigger mode feature)
+# ---------------------------------------------------------------------------
+
+
+async def test_update_backup_job_trigger_mode_switch_alone_is_409(admin_client, session):
+    """PATCHing ONLY trigger_mode -> WATCH, leaving the stale
+    schedule_cron/source_path in place and no watch_directory, must be
+    rejected -- the merged post-patch state is incoherent."""
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)  # SCHEDULE, source_path + schedule_cron set
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.patch(f"/api/backup-jobs/{job.id}", json={"trigger_mode": "WATCH"})
+    assert resp.status_code == 409
+
+
+async def test_update_backup_job_trigger_mode_switch_with_full_coherent_payload_succeeds(
+    admin_client, session
+):
+    """Same job as above, but this time the PATCH supplies the full
+    coherent WATCH field set in one request -- must succeed."""
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.patch(
+        f"/api/backup-jobs/{job.id}",
+        json={
+            "trigger_mode": "WATCH",
+            "watch_directory": "/watch/incoming",
+            "schedule_cron": None,
+            "source_path": None,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["trigger_mode"] == "WATCH"
+    assert body["watch_directory"] == "/watch/incoming"
+    assert body["schedule_cron"] is None
+    assert body["source_path"] is None
+
+
+async def test_update_backup_job_trigger_mode_switch_blocked_by_active_run(admin_client, session):
+    """Regardless of whether the rest of the payload would otherwise be
+    valid, changing trigger_mode while a PENDING/RUNNING JobRun exists for
+    the job must be rejected 409."""
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+    run = build_job_run(job.id, status=JobRunStatus.PENDING)
+    session.add(run)
+    await session.commit()
+
+    resp = await admin_client.patch(
+        f"/api/backup-jobs/{job.id}",
+        json={
+            "trigger_mode": "WATCH",
+            "watch_directory": "/watch/incoming",
+            "schedule_cron": None,
+            "source_path": None,
+        },
+    )
+    assert resp.status_code == 409
+
+
+async def test_update_backup_job_trigger_mode_switch_blocked_by_running_run(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+    run = build_job_run(job.id, status=JobRunStatus.RUNNING)
+    session.add(run)
+    await session.commit()
+
+    resp = await admin_client.patch(
+        f"/api/backup-jobs/{job.id}",
+        json={
+            "trigger_mode": "WATCH",
+            "watch_directory": "/watch/incoming",
+            "schedule_cron": None,
+            "source_path": None,
+        },
+    )
+    assert resp.status_code == 409
+
+
+async def test_update_backup_job_trigger_mode_unchanged_not_blocked_by_active_run(admin_client, session):
+    """Sanity check accompanying the two guards above: PATCHing a field
+    OTHER than trigger_mode (or setting trigger_mode to its current,
+    unchanged value) must NOT be blocked by an active run."""
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+    run = build_job_run(job.id, status=JobRunStatus.RUNNING)
+    session.add(run)
+    await session.commit()
+
+    resp = await admin_client.patch(f"/api/backup-jobs/{job.id}", json={"name": "renamed-under-run"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "renamed-under-run"
+
+
+# ---------------------------------------------------------------------------
+# POST /{id}/watch-events
+# ---------------------------------------------------------------------------
+
+
+async def _watch_job(session, **overrides):
+    server, disk = await _server_and_disk(session)
+    overrides.setdefault("trigger_mode", TriggerMode.WATCH)
+    overrides.setdefault("watch_directory", "/watch/incoming")
+    overrides.setdefault("schedule_cron", None)
+    overrides.setdefault("source_path", None)
+    job = build_backup_job(server.id, disk.id, **overrides)
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+    return job
+
+
+def _watch_event_payload(**overrides) -> dict:
+    payload = {
+        "event_type": "FILE_LOCK_TIMEOUT",
+        "active": True,
+        "file_path": "/watch/incoming/backup.bak",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def test_watch_event_active_raises_alert(admin_client, session):
+    job = await _watch_job(session)
+
+    resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload()
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["alert_raised"] is not None
+    assert body["alert_raised"]["alert_type"] == AlertType.WATCH_FILE_LOCK_TIMEOUT.value
+    assert body["alert_raised"]["status"] == AlertStatus.ACTIVE.value
+    assert body["alert_resolved"] is None
+
+    alerts_resp = await admin_client.get(
+        "/api/alerts", params={"status": "ACTIVE"}
+    )
+    alert_ids = {a["id"] for a in alerts_resp.json()["items"] if a["backup_job_id"] == job.id}
+    assert len(alert_ids) == 1
+
+
+async def test_watch_event_active_twice_is_idempotent_no_duplicate_alert(admin_client, session):
+    job = await _watch_job(session)
+
+    first = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload()
+    )
+    assert first.status_code == 202
+    first_alert_id = first.json()["alert_raised"]["id"]
+
+    second = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload()
+    )
+    assert second.status_code == 202
+    # Same (pre-existing) alert echoed back -- no new row created.
+    assert second.json()["alert_raised"]["id"] == first_alert_id
+
+    alerts_resp = await admin_client.get("/api/alerts", params={"status": "ACTIVE"})
+    matching = [a for a in alerts_resp.json()["items"] if a["backup_job_id"] == job.id]
+    assert len(matching) == 1
+
+
+async def test_watch_event_inactive_resolves_alert(admin_client, session):
+    job = await _watch_job(session)
+
+    await admin_client.post(f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload())
+
+    resolve_resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload(active=False)
+    )
+    assert resolve_resp.status_code == 202
+    body = resolve_resp.json()
+    assert body["alert_resolved"] is not None
+    assert body["alert_resolved"]["status"] == AlertStatus.RESOLVED.value
+    assert body["alert_raised"] is None
+
+    active_resp = await admin_client.get("/api/alerts", params={"status": "ACTIVE"})
+    matching = [a for a in active_resp.json()["items"] if a["backup_job_id"] == job.id]
+    assert matching == []
+
+    resolved_resp = await admin_client.get("/api/alerts", params={"status": "RESOLVED"})
+    resolved_matching = [a for a in resolved_resp.json()["items"] if a["backup_job_id"] == job.id]
+    assert len(resolved_matching) == 1
+
+
+async def test_watch_event_inactive_without_active_alert_is_noop(admin_client, session):
+    job = await _watch_job(session)
+
+    resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload(active=False)
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["alert_raised"] is None
+    assert body["alert_resolved"] is None
+
+
+async def test_watch_event_on_schedule_mode_job_is_409(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)  # SCHEDULE mode (default)
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload()
+    )
+    assert resp.status_code == 409
+
+
+async def test_watch_event_via_agent_key_succeeds(client, session):
+    job = await _watch_job(session)
+
+    resp = await client.post(
+        f"/api/backup-jobs/{job.id}/watch-events",
+        json=_watch_event_payload(),
+        headers={"X-Agent-Key": settings.AGENT_API_KEY},
+    )
+    assert resp.status_code == 202
+    assert resp.json()["alert_raised"] is not None
+
+
+async def test_watch_event_operator_forbidden(operator_client, session):
+    job = await _watch_job(session)
+
+    resp = await operator_client.post(
+        f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload()
+    )
+    assert resp.status_code == 403
+
+
+async def test_watch_event_unauthenticated_is_401(client, session):
+    job = await _watch_job(session)
+
+    resp = await client.post(
+        f"/api/backup-jobs/{job.id}/watch-events", json=_watch_event_payload()
+    )
+    assert resp.status_code == 401
+
+
+async def test_watch_event_404_for_missing_job(admin_client):
+    resp = await admin_client.post(
+        "/api/backup-jobs/999999/watch-events", json=_watch_event_payload()
+    )
+    assert resp.status_code == 404

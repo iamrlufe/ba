@@ -12,10 +12,12 @@ from pydantic import ValidationError
 
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.enums import (
+    BackupType,
     JobRunStatus,
     ProtocolType,
     RestoreMode,
     RestoreStatus,
+    TriggerMode,
 )
 from app.schemas.backup_job import BackupJobCreate
 from app.schemas.backup_record import BackupRecordBase
@@ -449,3 +451,110 @@ def test_copy_verification_extra_field_is_rejected():
             checked_at="2026-08-10T00:00:00Z",
             extra_field="nope",
         )
+
+
+# --------------------------------------------------------------------------
+# BackupJobCreate: trigger_mode (SCHEDULE/WATCH) conditional-required
+# fields + copy-window validation (app/schemas/backup_job.py)
+# --------------------------------------------------------------------------
+
+
+def _schedule_payload(**overrides) -> dict:
+    payload = dict(
+        name="job1",
+        server_id=1,
+        disk_id=1,
+        source_path="/src",
+        schedule_cron="* * * * *",
+    )
+    payload.update(overrides)
+    return payload
+
+
+def _watch_payload(**overrides) -> dict:
+    payload = dict(
+        name="job1",
+        server_id=1,
+        disk_id=1,
+        trigger_mode=TriggerMode.WATCH,
+        watch_directory="/watch",
+    )
+    payload.update(overrides)
+    return payload
+
+
+def test_backup_job_create_schedule_without_schedule_cron_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_schedule_payload(schedule_cron=None))
+
+
+def test_backup_job_create_schedule_without_source_path_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_schedule_payload(source_path=None))
+
+
+def test_backup_job_create_schedule_with_watch_directory_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_schedule_payload(watch_directory="/watch"))
+
+
+def test_backup_job_create_watch_without_watch_directory_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_watch_payload(watch_directory=None))
+
+
+def test_backup_job_create_watch_with_schedule_cron_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_watch_payload(schedule_cron="* * * * *"))
+
+
+def test_backup_job_create_watch_with_source_path_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_watch_payload(source_path="/src"))
+
+
+@pytest.mark.parametrize("backup_type", [BackupType.TRANSACTION_LOG, BackupType.CUSTOM])
+def test_backup_job_create_watch_rejects_unsupported_backup_types(backup_type):
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_watch_payload(backup_type=backup_type))
+
+
+@pytest.mark.parametrize("backup_type", [BackupType.FULL, BackupType.DIFFERENTIAL])
+def test_backup_job_create_watch_accepts_supported_backup_types(backup_type):
+    job = BackupJobCreate(**_watch_payload(backup_type=backup_type))
+    assert job.trigger_mode == TriggerMode.WATCH
+    assert job.backup_type == backup_type
+
+
+def test_backup_job_create_valid_schedule_job_still_accepted():
+    """Regression check: today's existing SCHEDULE-job shape must still
+    validate cleanly now that trigger_mode-conditional validators exist."""
+    job = BackupJobCreate(**_schedule_payload())
+    assert job.trigger_mode == TriggerMode.SCHEDULE
+    assert job.schedule_cron == "* * * * *"
+    assert job.source_path == "/src"
+    assert job.watch_directory is None
+
+
+def test_backup_job_create_copy_window_start_without_end_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_schedule_payload(copy_window_start_hour=18))
+
+
+def test_backup_job_create_copy_window_end_without_start_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_schedule_payload(copy_window_end_hour=9))
+
+
+def test_backup_job_create_copy_window_start_equals_end_is_rejected():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_schedule_payload(copy_window_start_hour=9, copy_window_end_hour=9))
+
+
+def test_backup_job_create_copy_window_midnight_wraparound_is_accepted():
+    """start_hour=18, end_hour=9 spans midnight -- must NOT be rejected;
+    the validator only checks both-or-neither + distinctness, not
+    start < end."""
+    job = BackupJobCreate(**_schedule_payload(copy_window_start_hour=18, copy_window_end_hour=9))
+    assert job.copy_window_start_hour == 18
+    assert job.copy_window_end_hour == 9

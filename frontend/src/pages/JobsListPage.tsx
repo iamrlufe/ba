@@ -1,10 +1,11 @@
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle2, XCircle, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TableSkeleton } from "@/components/shared/LoadingState";
 import { ErrorState } from "@/components/shared/ErrorState";
@@ -55,6 +56,14 @@ export function JobsListPage() {
         <h1 className="text-2xl font-semibold">Backup jobs</h1>
         {isAdmin ? <Button onClick={() => navigate("/jobs/new")}>New job</Button> : null}
       </div>
+
+      <Alert>
+        <Info className="h-4 w-4" />
+        <AlertDescription>
+          You can create multiple backup jobs for the same server to handle different copy
+          types (FULL/DIFFERENTIAL/TRANSACTION_LOG) with different source paths and schedules.
+        </AlertDescription>
+      </Alert>
 
       <div className="flex gap-3">
         <Select value={serverIdParam ?? ALL} onValueChange={(v) => updateFilter("server_id", v)}>
@@ -119,7 +128,9 @@ export function JobsListPage() {
                       <TableCell className="text-muted-foreground">
                         {serverNameById.get(job.server_id) ?? `#${job.server_id}`}
                       </TableCell>
-                      <TableCell className="font-mono text-xs">{job.schedule_cron}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {job.trigger_mode === "WATCH" ? `Watch: ${job.watch_directory}` : job.schedule_cron}
+                      </TableCell>
                       <TableCell className="text-muted-foreground">{formatDateTime(job.last_run_at)}</TableCell>
                       <TableCell className="text-muted-foreground">{formatDateTime(job.next_run_at)}</TableCell>
                       <TableCell>

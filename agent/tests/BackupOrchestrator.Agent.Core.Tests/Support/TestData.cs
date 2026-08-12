@@ -9,11 +9,16 @@ public static class TestData
         int id = 1,
         int serverId = 1,
         bool isEnabled = true,
-        string scheduleCron = "* * * * *",
+        string? scheduleCron = "* * * * *",
         string timezone = "UTC",
         int? expectedMaxDurationMinutes = null,
-        string sourcePath = @"C:\backups\db.bak",
-        int missedRunGraceMinutes = 15) =>
+        string? sourcePath = @"C:\backups\db.bak",
+        int missedRunGraceMinutes = 15,
+        string triggerMode = "SCHEDULE",
+        int? copyWindowStartHour = null,
+        int? copyWindowEndHour = null,
+        bool copyWindowWeekendUnrestricted = false,
+        string? watchDirectory = null) =>
         new()
         {
             Id = id,
@@ -29,6 +34,11 @@ public static class TestData
             RetentionMinCopies = 1,
             ExpectedMaxDurationMinutes = expectedMaxDurationMinutes,
             MissedRunGraceMinutes = missedRunGraceMinutes,
+            TriggerMode = triggerMode,
+            CopyWindowStartHour = copyWindowStartHour,
+            CopyWindowEndHour = copyWindowEndHour,
+            CopyWindowWeekendUnrestricted = copyWindowWeekendUnrestricted,
+            WatchDirectory = watchDirectory,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         };

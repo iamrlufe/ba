@@ -88,7 +88,9 @@ export function JobDetailPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">{job.name}</h1>
-          <p className="text-sm text-muted-foreground font-mono">{job.schedule_cron}</p>
+          <p className="text-sm text-muted-foreground font-mono">
+            {job.trigger_mode === "WATCH" ? `Watch: ${job.watch_directory}` : job.schedule_cron}
+          </p>
         </div>
         <div className="flex gap-2">
           {isAdmin ? (
@@ -132,9 +134,19 @@ export function JobDetailPage() {
               </Field>
               <Field label="Disk">#{job.disk_id}</Field>
               <Field label="Database">{job.database_name ?? "—"}</Field>
-              <Field label="Source path">{job.source_path}</Field>
+              <Field label="Trigger mode">{job.trigger_mode}</Field>
+              {job.trigger_mode === "WATCH" ? (
+                <Field label="Watch directory">{job.watch_directory}</Field>
+              ) : (
+                <Field label="Source path">{job.source_path}</Field>
+              )}
               <Field label="Backup type">{job.backup_type}</Field>
               <Field label="Timezone">{job.timezone}</Field>
+              <Field label="Copy window">
+                {job.copy_window_start_hour != null && job.copy_window_end_hour != null
+                  ? `${job.copy_window_start_hour}:00 – ${job.copy_window_end_hour}:00${job.copy_window_weekend_unrestricted ? " (unrestricted weekends)" : ""}`
+                  : "Unrestricted"}
+              </Field>
               <Field label="Retention days">{job.retention_days}</Field>
               <Field label="Retention min copies">{job.retention_min_copies}</Field>
               <Field label="Expected max duration">

@@ -176,6 +176,45 @@ public sealed class JobSchedulerTests
         Assert.Equal(3, fake.Calls.Count);
     }
 
+    [Fact]
+    public void Tick_WatchModeJob_IsFilteredOutEntirely_NeverEvaluatedAsDueOrOverlap()
+    {
+        // Placed before ScheduleCron is ever touched in Tick() -- required since
+        // ScheduleCron is nullable (null for WATCH). FakeCronNextRunCalculator has
+        // nothing enqueued, so any call into it (which would throw ArgumentNullException
+        // on a null cron string before even reaching the fake) proves the filter fired.
+        var clock = new TestClock(T);
+        var fake = new FakeCronNextRunCalculator(); // nothing enqueued -- any call throws
+        var scheduler = new JobScheduler(fake, clock);
+        var watchJob = TestData.Job(triggerMode: "WATCH", scheduleCron: null);
+        SchedulerTickResult? result = null;
+
+        var exception = Record.Exception(() => result = scheduler.Tick([watchJob]));
+
+        Assert.Null(exception);
+        Assert.Empty(result!.DueJobs);
+        Assert.Empty(result.SkippedOverlapJobs);
+        Assert.Empty(fake.Calls);
+    }
+
+    [Fact]
+    public void Tick_MixOfScheduleAndWatchJobs_OnlyScheduleJobIsEvaluated()
+    {
+        var clock = new TestClock(T);
+        var fake = new FakeCronNextRunCalculator();
+        fake.Enqueue(Cron, T);
+        fake.Enqueue(Cron, T + TimeSpan.FromHours(1));
+        var scheduler = new JobScheduler(fake, clock);
+        var scheduleJob = TestData.Job(id: 1, scheduleCron: Cron, triggerMode: "SCHEDULE");
+        var watchJob = TestData.Job(id: 2, triggerMode: "WATCH", scheduleCron: null);
+
+        var result = scheduler.Tick([scheduleJob, watchJob]);
+
+        Assert.Single(result.DueJobs);
+        Assert.Equal(1, result.DueJobs[0].Id);
+        Assert.Empty(result.SkippedOverlapJobs);
+    }
+
     [Theory]
     [InlineData(45, 120, 45)]
     [InlineData(null, 120, 120)]

@@ -26,6 +26,15 @@ class BackupType(str, Enum):
     CUSTOM = "CUSTOM"
 
 
+class TriggerMode(str, Enum):
+    SCHEDULE = "SCHEDULE"
+    WATCH = "WATCH"
+
+
+class WatchEventType(str, Enum):
+    FILE_LOCK_TIMEOUT = "FILE_LOCK_TIMEOUT"
+
+
 class JobRunStatus(str, Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -63,6 +72,7 @@ class AlertType(str, Enum):
     SERVER_UNREACHABLE = "SERVER_UNREACHABLE"
     AGENT_OFFLINE = "AGENT_OFFLINE"
     RESTORE_FAILED = "RESTORE_FAILED"
+    WATCH_FILE_LOCK_TIMEOUT = "WATCH_FILE_LOCK_TIMEOUT"
 
 
 class AlertSeverity(str, Enum):

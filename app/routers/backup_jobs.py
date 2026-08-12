@@ -4,20 +4,33 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, require_admin_or_agent_key, require_role
 from app.core.db import async_session_maker, get_db
+from app.models.alert import Alert
 from app.models.backup_job import BackupJob
 from app.models.disk import Disk
-from app.models.enums import JobRunStatus, UserRole, VerificationRunStatus, VerificationType
+from app.models.enums import (
+    AlertSeverity,
+    AlertType,
+    BackupType,
+    JobRunStatus,
+    TriggerMode,
+    UserRole,
+    VerificationRunStatus,
+    VerificationType,
+)
 from app.models.job_run import JobRun
 from app.models.server import Server
 from app.models.sql_instance import SqlInstance
 from app.models.user import User
 from app.models.verification_run import VerificationRun
+from app.routers._alerts import raise_alert_if_absent, resolve_active_alert
 from app.routers._deps import get_or_404
+from app.schemas.alert import AlertRead
 from app.schemas.backup_job import BackupJobCreate, BackupJobRead, BackupJobUpdate
 from app.schemas.common import PaginatedResponse
 from app.schemas.verification_run import VerificationRunRead
+from app.schemas.watch_event import WatchEventRequest, WatchEventResponse
 from app.workers.backup_verification import (
     _track_background_task,
     create_pending_verification_run,
@@ -112,7 +125,26 @@ async def update_backup_job(
 ) -> BackupJob:
     job = await get_or_404(session, BackupJob, backup_job_id)
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    payload_set = payload.model_dump(exclude_unset=True)
+
+    # Mirrors delete_backup_job's active-run check exactly. Copy windows
+    # can now leave a run legitimately PENDING for hours waiting for its
+    # window to open, and changing trigger_mode out from under an
+    # in-flight run would leave that run referring to a mode it was never
+    # created under -- block it instead.
+    if "trigger_mode" in payload_set and payload_set["trigger_mode"] != job.trigger_mode:
+        active_runs_stmt = select(func.count()).select_from(JobRun).where(
+            JobRun.backup_job_id == backup_job_id,
+            JobRun.status.in_((JobRunStatus.PENDING, JobRunStatus.RUNNING)),
+        )
+        active_runs = (await session.execute(active_runs_stmt)).scalar_one()
+        if active_runs > 0:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change trigger_mode while a run is PENDING/RUNNING",
+            )
+
+    for field, value in payload_set.items():
         setattr(job, field, value)
 
     # BackupJobCreate enforces this invariant at creation time, but
@@ -128,6 +160,53 @@ async def update_backup_job(
             status_code=409,
             detail="database_name is required when sql_instance_id is set -- "
             "needed to query msdb.dbo.backupset for verification",
+        )
+
+    # Same trigger-mode-conditional-required-fields / WATCH+backup_type
+    # checks BackupJobCreate's validators enforce at creation time, re-run
+    # here against the MERGED post-patch state (BackupJobUpdate alone
+    # can't see it -- see its docstring).
+    if job.trigger_mode == TriggerMode.SCHEDULE:
+        if not job.schedule_cron:
+            raise HTTPException(
+                status_code=409, detail="schedule_cron is required when trigger_mode is SCHEDULE"
+            )
+        if not job.source_path:
+            raise HTTPException(
+                status_code=409, detail="source_path is required when trigger_mode is SCHEDULE"
+            )
+        if job.watch_directory is not None:
+            raise HTTPException(
+                status_code=409, detail="watch_directory must not be set when trigger_mode is SCHEDULE"
+            )
+    elif job.trigger_mode == TriggerMode.WATCH:
+        if not job.watch_directory:
+            raise HTTPException(
+                status_code=409, detail="watch_directory is required when trigger_mode is WATCH"
+            )
+        if job.schedule_cron is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="schedule_cron must not be set when trigger_mode is WATCH (no fixed schedule)",
+            )
+        if job.source_path is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="source_path must not be set when trigger_mode is WATCH -- use watch_directory",
+            )
+
+    if job.trigger_mode == TriggerMode.WATCH and job.backup_type in (
+        BackupType.TRANSACTION_LOG,
+        BackupType.CUSTOM,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "WATCH trigger mode is not supported for TRANSACTION_LOG or CUSTOM backup "
+                "types in this iteration -- sequential/cumulative or undefined-semantics "
+                "backups cannot safely use latest-file-wins transfer semantics; use SCHEDULE "
+                "mode instead"
+            ),
         )
 
     await session.commit()
@@ -270,3 +349,48 @@ async def get_backup_job_verification_run(
     if run.backup_job_id != backup_job_id:
         raise HTTPException(status_code=404, detail=f"VerificationRun {run_id} not found")
     return run
+
+
+@router.post(
+    "/{backup_job_id}/watch-events",
+    response_model=WatchEventResponse,
+    status_code=202,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
+async def report_watch_event(
+    backup_job_id: int, payload: WatchEventRequest, session: AsyncSession = Depends(get_db)
+) -> WatchEventResponse:
+    job = await get_or_404(session, BackupJob, backup_job_id)
+    if job.trigger_mode != TriggerMode.WATCH:
+        raise HTTPException(status_code=409, detail="watch-events can only be reported for WATCH-mode jobs")
+
+    alert_raised = None
+    alert_resolved = None
+    if payload.active:
+        alert_raised = await raise_alert_if_absent(
+            session,
+            alert_type=AlertType.WATCH_FILE_LOCK_TIMEOUT,
+            severity=AlertSeverity.WARNING,
+            entity_type="backup_job",
+            entity_column=Alert.backup_job_id,
+            entity_id=backup_job_id,
+            title=f"Backup job '{job.name}' file locked longer than expected",
+            message=(
+                f"File '{payload.file_path}' has been locked longer than expected."
+                + (f" {payload.detail}" if payload.detail else "")
+            ),
+        )
+    else:
+        alert_resolved = await resolve_active_alert(
+            session,
+            alert_type=AlertType.WATCH_FILE_LOCK_TIMEOUT,
+            entity_type="backup_job",
+            entity_column=Alert.backup_job_id,
+            entity_id=backup_job_id,
+        )
+
+    await session.commit()
+    return WatchEventResponse(
+        alert_raised=AlertRead.model_validate(alert_raised) if alert_raised else None,
+        alert_resolved=AlertRead.model_validate(alert_resolved) if alert_resolved else None,
+    )

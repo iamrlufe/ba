@@ -11,6 +11,7 @@ from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.audit import log_agent_credential_access
 from app.core.auth import require_admin_or_agent_key, require_connection_config_key, require_role
@@ -278,7 +279,17 @@ async def list_agent_jobs(
     filters = (BackupJob.server_id == server_id, BackupJob.is_enabled.is_(True))
     total_stmt = select(func.count()).select_from(BackupJob).where(*filters)
     items_stmt = (
-        select(BackupJob).where(*filters).order_by(BackupJob.id.desc()).limit(limit).offset(offset)
+        select(BackupJob)
+        # sql_instance eager-loaded so BackupJobRead's sql_instance_host/
+        # port/instance_name/use_windows_auth hybrid_properties (see
+        # app/models/backup_job.py) actually resolve real values here --
+        # this is the only BackupJobRead call site that needs them
+        # (WATCH-mode msdb-priority detection on the .NET agent).
+        .options(selectinload(BackupJob.sql_instance))
+        .where(*filters)
+        .order_by(BackupJob.id.desc())
+        .limit(limit)
+        .offset(offset)
     )
 
     total = (await session.execute(total_stmt)).scalar_one()

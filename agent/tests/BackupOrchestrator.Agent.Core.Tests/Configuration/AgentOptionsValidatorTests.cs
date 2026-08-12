@@ -299,6 +299,181 @@ public sealed class AgentOptionsValidatorTests
         Assert.True(result.Succeeded);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveWatchReconciliationIntervalSeconds_Fails(int value)
+    {
+        var options = ValidOptions();
+        options.WatchReconciliationIntervalSeconds = value;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.WatchReconciliationIntervalSeconds)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveFileLockCheckIntervalSeconds_Fails(int value)
+    {
+        var options = ValidOptions();
+        options.FileLockCheckIntervalSeconds = value;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.FileLockCheckIntervalSeconds)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveFileLockCheckTimeoutMinutes_Fails(int value)
+    {
+        var options = ValidOptions();
+        options.FileLockCheckTimeoutMinutes = value;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.FileLockCheckTimeoutMinutes)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveMsdbConnectTimeoutSeconds_Fails(int value)
+    {
+        var options = ValidOptions();
+        options.MsdbConnectTimeoutSeconds = value;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.MsdbConnectTimeoutSeconds)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveMsdbCommandTimeoutSeconds_Fails(int value)
+    {
+        var options = ValidOptions();
+        options.MsdbCommandTimeoutSeconds = value;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.MsdbCommandTimeoutSeconds)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveMaxWatchTransferAttempts_Fails(int value)
+    {
+        var options = ValidOptions();
+        options.MaxWatchTransferAttempts = value;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, f => f.Contains(nameof(AgentOptions.MaxWatchTransferAttempts)));
+    }
+
+    // -----------------------------------------------------------------
+    // Cross-field rule: FileLockCheckTimeoutMinutes * 60 >= FileLockCheckIntervalSeconds * 5
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public void Validate_FileLockCheckTimeoutAllowsFewerThanFiveProbes_Fails()
+    {
+        var options = ValidOptions();
+        options.FileLockCheckIntervalSeconds = 60;
+        options.FileLockCheckTimeoutMinutes = 4; // 240s < 60*5=300s -- fewer than 5 probes
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(
+            result.Failures!,
+            f => f.Contains(nameof(AgentOptions.FileLockCheckTimeoutMinutes))
+                 && f.Contains(nameof(AgentOptions.FileLockCheckIntervalSeconds)));
+    }
+
+    [Fact]
+    public void Validate_FileLockCheckTimeoutAllowsExactlyFiveProbes_BoundaryIsValid()
+    {
+        // FileLockCheckTimeoutMinutes * 60 == FileLockCheckIntervalSeconds * 5 exactly --
+        // the implementation uses "<" to fail (i.e. ">=" to pass), so equality passes.
+        var options = ValidOptions();
+        options.FileLockCheckIntervalSeconds = 60;
+        options.FileLockCheckTimeoutMinutes = 5; // 300s == 60*5=300s exactly
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
+    public void Validate_FileLockCheckTimeoutAllowsMoreThanFiveProbes_Succeeds()
+    {
+        var options = ValidOptions();
+        options.FileLockCheckIntervalSeconds = 15;
+        options.FileLockCheckTimeoutMinutes = 45; // 2700s >> 15*5=75s
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    // -----------------------------------------------------------------
+    // Cross-field rule: MsdbConnectTimeoutSeconds <= FileLockCheckIntervalSeconds
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public void Validate_MsdbConnectTimeoutExceedsFileLockCheckInterval_Fails()
+    {
+        var options = ValidOptions();
+        options.FileLockCheckIntervalSeconds = 10;
+        options.MsdbConnectTimeoutSeconds = 11;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(
+            result.Failures!,
+            f => f.Contains(nameof(AgentOptions.MsdbConnectTimeoutSeconds))
+                 && f.Contains(nameof(AgentOptions.FileLockCheckIntervalSeconds)));
+    }
+
+    [Fact]
+    public void Validate_MsdbConnectTimeoutEqualsFileLockCheckInterval_BoundaryIsValid()
+    {
+        // "must not exceed" -- equal is allowed, only strictly greater fails.
+        var options = ValidOptions();
+        options.FileLockCheckIntervalSeconds = 10;
+        options.MsdbConnectTimeoutSeconds = 10;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
+    public void Validate_MsdbConnectTimeoutLessThanFileLockCheckInterval_Succeeds()
+    {
+        var options = ValidOptions();
+        options.FileLockCheckIntervalSeconds = 15;
+        options.MsdbConnectTimeoutSeconds = 5;
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
+
     [Fact]
     public void Validate_MultipleInvalidFields_ReportsAllFailuresNotJustFirst()
     {

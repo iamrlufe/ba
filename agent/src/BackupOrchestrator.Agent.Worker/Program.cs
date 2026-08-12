@@ -5,7 +5,9 @@ using BackupOrchestrator.Agent.Worker.Backend;
 using BackupOrchestrator.Agent.Worker.HostedServices;
 using BackupOrchestrator.Agent.Worker.Monitoring;
 using BackupOrchestrator.Agent.Worker.OfflineQueue;
+using BackupOrchestrator.Agent.Worker.Pipeline;
 using BackupOrchestrator.Agent.Worker.Transfer;
+using BackupOrchestrator.Agent.Worker.Watch;
 using Microsoft.Extensions.Options;
 using Serilog;
 
@@ -68,6 +70,20 @@ builder.Services.AddSingleton<IHostMemoryProvider, HostMemoryProvider>();
 builder.Services.AddSingleton<IServiceStatusChecker, ServiceStatusChecker>();
 builder.Services.AddSingleton<IMonitoringConfigCache, InMemoryMonitoringConfigCache>();
 
+// ---- WATCH-mode seams / pure logic + I/O implementations ------------------
+builder.Services.AddSingleton<IFileLockChecker, ExclusiveOpenFileLockChecker>();
+builder.Services.AddSingleton<ISqlBackupFinishDetector, MsdbBackupFinishDetector>();
+builder.Services.AddSingleton<IWatchLedger, SqliteWatchLedger>();
+builder.Services.AddSingleton<WatchCandidateTracker>();
+builder.Services.AddSingleton<BackupRunPipeline>();
+
+// IWatchDirectoryMonitor is deliberately IDisposable and created/disposed
+// per-job by WatchHostedService, never a singleton itself -- this factory
+// hands out a fresh instance (still constructor-injected with its own
+// ILogger<T> via the resolved ILoggerFactory) each time it's invoked.
+builder.Services.AddSingleton<Func<IWatchDirectoryMonitor>>(sp =>
+    () => new FileSystemWatchDirectoryMonitor(sp.GetRequiredService<ILogger<FileSystemWatchDirectoryMonitor>>()));
+
 builder.Services.AddHttpClient<IBackendApiClient, HttpBackendApiClient>((serviceProvider, client) =>
 {
     var options = serviceProvider.GetRequiredService<IOptions<AgentOptions>>().Value;
@@ -84,6 +100,7 @@ builder.Services.AddHttpClient<IBackendApiClient, HttpBackendApiClient>((service
 builder.Services.AddHostedService<HeartbeatHostedService>();
 builder.Services.AddHostedService<JobPollHostedService>();
 builder.Services.AddHostedService<SchedulerHostedService>();
+builder.Services.AddHostedService<WatchHostedService>();
 builder.Services.AddHostedService<OfflineReplayHostedService>();
 builder.Services.AddHostedService<CpuSamplingHostedService>();
 builder.Services.AddHostedService<MonitoringConfigPollHostedService>();

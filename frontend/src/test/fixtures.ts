@@ -1,4 +1,5 @@
 import type {
+  BackupJobRead,
   JobRunRead,
   PaginatedResponse,
   RestoreOperationRead,
@@ -61,6 +62,38 @@ export function makeSqlInstance(overrides: Partial<SqlInstanceRead> = {}): SqlIn
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,
   } as SqlInstanceRead;
+}
+
+export function makeBackupJob(overrides: Partial<BackupJobRead> = {}): BackupJobRead {
+  return {
+    id: 1,
+    name: "prod-db-full",
+    database_name: "ProdDB",
+    source_path: "/backups/prod",
+    backup_type: "FULL",
+    trigger_mode: "SCHEDULE",
+    watch_directory: null,
+    schedule_cron: "0 2 * * *",
+    timezone: "Asia/Tashkent",
+    retention_days: 30,
+    retention_min_copies: 1,
+    verification_method: "RESTORE_VERIFYONLY",
+    expected_max_duration_minutes: null,
+    missed_run_grace_minutes: 60,
+    copy_window_start_hour: null,
+    copy_window_end_hour: null,
+    copy_window_weekend_unrestricted: false,
+    local_backup_path_pattern: null,
+    server_id: 7,
+    disk_id: 1,
+    sql_instance_id: 3,
+    is_enabled: true,
+    last_run_at: "2026-08-10T02:00:00Z",
+    next_run_at: "2026-08-11T02:00:00Z",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  } as BackupJobRead;
 }
 
 export function makeJobRun(overrides: Partial<JobRunRead> = {}): JobRunRead {

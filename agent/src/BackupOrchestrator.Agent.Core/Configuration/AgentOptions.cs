@@ -70,4 +70,28 @@ public sealed class AgentOptions
     /// ticks -- see ICpuUsageSampler. Should be well under HeartbeatIntervalSeconds
     /// so several ticks accumulate per heartbeat window.</summary>
     public int CpuSamplingIntervalSeconds { get; set; } = 5;
+
+    /// <summary>How often WatchHostedService rescans each WATCH job's directory
+    /// contents against the ledger (defense-in-depth backstop for missed
+    /// FileSystemWatcher events / agent downtime). Always runs once at startup too.</summary>
+    public int WatchReconciliationIntervalSeconds { get; set; } = 300; // 5 min
+
+    /// <summary>Retry cadence for the exclusive-open lock-check readiness probe.</summary>
+    public int FileLockCheckIntervalSeconds { get; set; } = 15;
+
+    /// <summary>Fallback lock-check timeout when the job's own ExpectedMaxDurationMinutes
+    /// is null (if set, that value is used instead -- see MsdbBackupFinishDetector/
+    /// ExclusiveOpenFileLockChecker usage in WatchHostedService).</summary>
+    public int FileLockCheckTimeoutMinutes { get; set; } = 45;
+
+    /// <summary>TCP-connect bound for the msdb SqlConnection.</summary>
+    public int MsdbConnectTimeoutSeconds { get; set; } = 5;
+
+    /// <summary>Command-execution bound for the msdb query itself.</summary>
+    public int MsdbCommandTimeoutSeconds { get; set; } = 10;
+
+    /// <summary>Cap on automatic re-offer-after-transfer-failure attempts for a single
+    /// WATCH-detected file before the agent gives up on that specific file (only a
+    /// newer file can supersede it after this).</summary>
+    public int MaxWatchTransferAttempts { get; set; } = 5;
 }

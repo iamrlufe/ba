@@ -46,6 +46,16 @@ public interface IBackendApiClient
         int jobRunId, JobRunCompleteRequest request, CancellationToken cancellationToken);
 
     Task CreateBackupRecordAsync(BackupRecordCreateRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /api/backup-jobs/{backup_job_id}/watch-events, X-Agent-Key auth,
+    /// fire-and-forget style (202, response body ignored). Throws
+    /// BackendUnavailableException once the bounded default retry pipeline is
+    /// exhausted -- callers must NOT enqueue to the offline queue on failure; log a
+    /// Warning and let the next lock-check cycle (still running every
+    /// FileLockCheckIntervalSeconds regardless) retry.
+    /// </summary>
+    Task ReportWatchEventAsync(WatchEventRequest request, CancellationToken cancellationToken);
 }
 
 public sealed class JobsPage

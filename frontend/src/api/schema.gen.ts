@@ -298,6 +298,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/backup-jobs/{backup_job_id}/watch-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report Watch Event */
+        post: operations["report_watch_event_api_backup_jobs__backup_job_id__watch_events_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{server_id}/heartbeat": {
         parameters: {
             query?: never;
@@ -932,7 +949,7 @@ export interface components {
          * AlertType
          * @enum {string}
          */
-        AlertType: "JOB_FAILED" | "JOB_MISSED" | "JOB_TIMEOUT" | "VERIFICATION_FAILED" | "BACKUP_VERIFICATION_FAILED" | "FTP_COPY_INTEGRITY_FAILED" | "DISK_SPACE_LOW" | "DISK_SPACE_CRITICAL" | "SERVER_UNREACHABLE" | "AGENT_OFFLINE" | "RESTORE_FAILED";
+        AlertType: "JOB_FAILED" | "JOB_MISSED" | "JOB_TIMEOUT" | "VERIFICATION_FAILED" | "BACKUP_VERIFICATION_FAILED" | "FTP_COPY_INTEGRITY_FAILED" | "DISK_SPACE_LOW" | "DISK_SPACE_CRITICAL" | "SERVER_UNREACHABLE" | "AGENT_OFFLINE" | "RESTORE_FAILED" | "WATCH_FILE_LOCK_TIMEOUT";
         /** BackupJobCreate */
         BackupJobCreate: {
             /** Name */
@@ -940,11 +957,15 @@ export interface components {
             /** Database Name */
             database_name?: string | null;
             /** Source Path */
-            source_path: string;
+            source_path?: string | null;
             /** @default FULL */
             backup_type: components["schemas"]["BackupType"];
+            /** @default SCHEDULE */
+            trigger_mode: components["schemas"]["TriggerMode"];
+            /** Watch Directory */
+            watch_directory?: string | null;
             /** Schedule Cron */
-            schedule_cron: string;
+            schedule_cron?: string | null;
             /**
              * Timezone
              * @default UTC
@@ -969,6 +990,15 @@ export interface components {
              * @default 60
              */
             missed_run_grace_minutes: number;
+            /** Copy Window Start Hour */
+            copy_window_start_hour?: number | null;
+            /** Copy Window End Hour */
+            copy_window_end_hour?: number | null;
+            /**
+             * Copy Window Weekend Unrestricted
+             * @default false
+             */
+            copy_window_weekend_unrestricted: boolean;
             /** Local Backup Path Pattern */
             local_backup_path_pattern?: string | null;
             /** Server Id */
@@ -990,11 +1020,15 @@ export interface components {
             /** Database Name */
             database_name?: string | null;
             /** Source Path */
-            source_path: string;
+            source_path?: string | null;
             /** @default FULL */
             backup_type: components["schemas"]["BackupType"];
+            /** @default SCHEDULE */
+            trigger_mode: components["schemas"]["TriggerMode"];
+            /** Watch Directory */
+            watch_directory?: string | null;
             /** Schedule Cron */
-            schedule_cron: string;
+            schedule_cron?: string | null;
             /**
              * Timezone
              * @default UTC
@@ -1019,6 +1053,15 @@ export interface components {
              * @default 60
              */
             missed_run_grace_minutes: number;
+            /** Copy Window Start Hour */
+            copy_window_start_hour?: number | null;
+            /** Copy Window End Hour */
+            copy_window_end_hour?: number | null;
+            /**
+             * Copy Window Weekend Unrestricted
+             * @default false
+             */
+            copy_window_weekend_unrestricted: boolean;
             /** Local Backup Path Pattern */
             local_backup_path_pattern?: string | null;
             /** Id */
@@ -1055,6 +1098,9 @@ export interface components {
             /** Source Path */
             source_path?: string | null;
             backup_type?: components["schemas"]["BackupType"] | null;
+            trigger_mode?: components["schemas"]["TriggerMode"] | null;
+            /** Watch Directory */
+            watch_directory?: string | null;
             /** Schedule Cron */
             schedule_cron?: string | null;
             /** Timezone */
@@ -1069,6 +1115,12 @@ export interface components {
             expected_max_duration_minutes?: number | null;
             /** Missed Run Grace Minutes */
             missed_run_grace_minutes?: number | null;
+            /** Copy Window Start Hour */
+            copy_window_start_hour?: number | null;
+            /** Copy Window End Hour */
+            copy_window_end_hour?: number | null;
+            /** Copy Window Weekend Unrestricted */
+            copy_window_weekend_unrestricted?: boolean | null;
             /** Local Backup Path Pattern */
             local_backup_path_pattern?: string | null;
             /** Is Enabled */
@@ -1889,6 +1941,11 @@ export interface components {
             username: string;
             role: components["schemas"]["UserRole"];
         };
+        /**
+         * TriggerMode
+         * @enum {string}
+         */
+        TriggerMode: "SCHEDULE" | "WATCH";
         /** UserCreate */
         UserCreate: {
             /** Username */
@@ -2000,6 +2057,26 @@ export interface components {
          * @enum {string}
          */
         VerificationType: "RESTORE_VERIFYONLY" | "FTP_COPY_INTEGRITY";
+        /** WatchEventRequest */
+        WatchEventRequest: {
+            event_type: components["schemas"]["WatchEventType"];
+            /** Active */
+            active: boolean;
+            /** File Path */
+            file_path: string;
+            /** Detail */
+            detail?: string | null;
+        };
+        /** WatchEventResponse */
+        WatchEventResponse: {
+            alert_raised?: components["schemas"]["AlertRead"] | null;
+            alert_resolved?: components["schemas"]["AlertRead"] | null;
+        };
+        /**
+         * WatchEventType
+         * @enum {string}
+         */
+        WatchEventType: "FILE_LOCK_TIMEOUT";
     };
     responses: never;
     parameters: never;
@@ -2929,6 +3006,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VerificationRunRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_watch_event_api_backup_jobs__backup_job_id__watch_events_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Agent-Key"?: string | null;
+            };
+            path: {
+                backup_job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchEventRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchEventResponse"];
                 };
             };
             /** @description Validation Error */

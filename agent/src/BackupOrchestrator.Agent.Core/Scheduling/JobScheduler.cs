@@ -71,6 +71,14 @@ public sealed class JobScheduler
                 continue;
             }
 
+            if (job.TriggerMode != "SCHEDULE")
+            {
+                // WATCH-mode jobs are driven by WatchHostedService, not the
+                // cron loop. Placed BEFORE ScheduleCron is ever touched --
+                // required since ScheduleCron is nullable (null for WATCH).
+                continue;
+            }
+
             var nextFire = GetOrComputeNextFire(job, now);
             if (nextFire > now)
             {
@@ -80,7 +88,10 @@ public sealed class JobScheduler
             // Due. Advance bookkeeping regardless of overlap outcome so a
             // skipped fire doesn't cause the same slot to be re-evaluated
             // as "due" on every subsequent tick until the run finishes.
-            var following = _cronCalculator.GetNextOccurrence(job.ScheduleCron, job.Timezone, now);
+            // job.ScheduleCron! -- safe: the TriggerMode != "SCHEDULE" filter
+            // above already `continue`d for any job where this could be null
+            // (backend invariant: ScheduleCron is required iff SCHEDULE).
+            var following = _cronCalculator.GetNextOccurrence(job.ScheduleCron!, job.Timezone, now);
             if (following.HasValue)
             {
                 _nextFireUtcByJobId[job.Id] = following.Value;
@@ -119,7 +130,9 @@ public sealed class JobScheduler
         // First time we've seen this job: seed from "just before now" so a
         // cron expression matching the current instant fires immediately
         // rather than waiting a full period.
-        var seed = _cronCalculator.GetNextOccurrence(job.ScheduleCron, job.Timezone, now.AddSeconds(-1));
+        // job.ScheduleCron! -- only reachable for TriggerMode == "SCHEDULE"
+        // jobs; see the call site in Tick().
+        var seed = _cronCalculator.GetNextOccurrence(job.ScheduleCron!, job.Timezone, now.AddSeconds(-1));
         var nextFire = seed ?? DateTimeOffset.MaxValue;
         _nextFireUtcByJobId[job.Id] = nextFire;
         return nextFire;

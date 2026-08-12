@@ -25,7 +25,14 @@ from app.core.timeutils import as_naive_utc, compute_next_scheduled_run
 from app.main import app as fastapi_app
 from app.models.alert import Alert
 from app.models.backup_job import BackupJob
-from app.models.enums import AlertStatus, AlertType, JobRunStatus, ServerStatus, UserRole
+from app.models.enums import (
+    AlertStatus,
+    AlertType,
+    JobRunStatus,
+    ServerStatus,
+    TriggerMode,
+    UserRole,
+)
 from app.models.job_run import JobRun
 from app.models.server import Server
 from app.workers.alert_worker import check_agent_offline, check_job_timeouts, check_missed_runs
@@ -253,6 +260,49 @@ async def test_check_missed_runs_dst_spring_forward_transition_is_sane(session, 
     now = datetime(2026, 3, 8, 12, 0, 0, tzinfo=UTC)
     count = await check_missed_runs(session_maker, now=now)
     assert count == 1  # well past due by noon UTC
+
+
+async def test_check_missed_runs_watch_mode_job_never_evaluated_and_does_not_crash(session, session_maker):
+    """A WATCH-mode job has no schedule_cron to evaluate cron math against
+    -- check_missed_runs must filter it out entirely (never raise
+    JOB_MISSED for it) and must not error trying to evaluate it, even
+    though by naive "long since last_run_at" reasoning it would otherwise
+    look badly overdue."""
+    await _enabled_job(
+        session,
+        trigger_mode=TriggerMode.WATCH,
+        watch_directory="/watch/incoming",
+        schedule_cron=None,
+        source_path=None,
+        last_run_at=NOW - timedelta(days=30),
+    )
+
+    count = await check_missed_runs(session_maker, now=NOW)
+    assert count == 0
+    assert await _active_alert_count(session_maker, AlertType.JOB_MISSED) == 0
+
+
+async def test_check_missed_runs_schedule_job_with_active_pending_run_never_raised(session, session_maker):
+    """A SCHEDULE job whose last_run_at-anchored expected-next-fire time
+    is long past due must NOT raise JOB_MISSED as long as it has an active
+    (PENDING) JobRun -- the copy-window feature can legitimately leave a
+    run PENDING for hours waiting for its window to open, and
+    last_run_at-anchored missed-run detection must not misread that as
+    overdue."""
+    job = await _enabled_job(
+        session,
+        schedule_cron="0 * * * *",
+        timezone="UTC",
+        missed_run_grace_minutes=15,
+        last_run_at=NOW - timedelta(hours=3),
+    )
+    run = build_job_run(job.id, status=JobRunStatus.PENDING)
+    session.add(run)
+    await session.commit()
+
+    count = await check_missed_runs(session_maker, now=NOW)
+    assert count == 0
+    assert await _active_alert_count(session_maker, AlertType.JOB_MISSED) == 0
 
 
 # ---------------------------------------------------------------------------

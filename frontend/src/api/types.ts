@@ -29,6 +29,7 @@ export type VerificationRunStatus = components["schemas"]["VerificationRunStatus
 export type UserRole = components["schemas"]["UserRole"];
 export type VerificationType = components["schemas"]["VerificationType"];
 export type AgentCopyVerificationStatus = components["schemas"]["AgentCopyVerificationStatus"];
+export type TriggerMode = components["schemas"]["TriggerMode"];
 
 // ---------------------------------------------------------------------------
 // Terminal-status constants -- mirrors app/models/enums.py's frozensets.

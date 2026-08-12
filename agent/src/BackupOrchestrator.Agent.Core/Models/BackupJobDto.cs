@@ -18,13 +18,34 @@ public sealed class BackupJobDto
     public required bool IsEnabled { get; init; }
     public required string Name { get; init; }
     public string? DatabaseName { get; init; }
-    public required string SourcePath { get; init; }
+
+    /// <summary>Required iff TriggerMode == "SCHEDULE"; null for WATCH.</summary>
+    public string? SourcePath { get; init; }
+
     public required string BackupType { get; init; }
-    public required string ScheduleCron { get; init; }
+
+    /// <summary>Required iff TriggerMode == "SCHEDULE"; null for WATCH.</summary>
+    public string? ScheduleCron { get; init; }
+
     public required string Timezone { get; init; }
     public required int RetentionDays { get; init; }
     public required int RetentionMinCopies { get; init; }
     public string? VerificationMethod { get; init; }
+
+    /// <summary>"SCHEDULE" | "WATCH". Plain string, mirroring the existing BackupType convention.</summary>
+    public required string TriggerMode { get; init; }
+
+    /// <summary>Required iff TriggerMode == "WATCH"; a directory, not a file, unlike SourcePath.</summary>
+    public string? WatchDirectory { get; init; }
+
+    public int? CopyWindowStartHour { get; init; }
+    public int? CopyWindowEndHour { get; init; }
+    public required bool CopyWindowWeekendUnrestricted { get; init; }
+
+    public string? SqlInstanceHost { get; init; }
+    public int? SqlInstancePort { get; init; }
+    public string? SqlInstanceInstanceName { get; init; }
+    public bool? SqlInstanceUseWindowsAuth { get; init; }
 
     /// <summary>
     /// Minutes, NOT seconds -- this is the watchdog timeout source. When

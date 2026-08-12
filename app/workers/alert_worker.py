@@ -27,7 +27,7 @@ from app.core.timeutils import as_naive_utc, compute_next_scheduled_run
 from app.core.ws_manager import manager
 from app.models.alert import Alert
 from app.models.backup_job import BackupJob
-from app.models.enums import AlertSeverity, AlertType, JobRunStatus, ServerStatus
+from app.models.enums import AlertSeverity, AlertType, JobRunStatus, ServerStatus, TriggerMode
 from app.models.job_run import JobRun
 from app.models.server import Server
 from app.routers._alerts import get_active_alert, raise_alert_if_absent, resolve_active_alert
@@ -41,18 +41,37 @@ logger = logging.getLogger(__name__)
 async def check_missed_runs(
     session_maker: async_sessionmaker[AsyncSession], *, now: datetime | None = None
 ) -> int:
-    """For every enabled BackupJob, raise JOB_MISSED if the next scheduled
-    fire (per schedule_cron/timezone, anchored on last_run_at or, if the
-    job has never run, on created_at) is overdue by more than
+    """For every enabled SCHEDULE-mode BackupJob with no currently active
+    (PENDING/RUNNING) run, raise JOB_MISSED if the next scheduled fire (per
+    schedule_cron/timezone, anchored on last_run_at or, if the job has
+    never run, on created_at) is overdue by more than
     missed_run_grace_minutes; resolve JOB_MISSED once the job is no longer
     overdue. Returns the number of new alerts raised.
+
+    WATCH-mode jobs are excluded entirely -- they have no fixed schedule to
+    be "on time" against (see TriggerMode.WATCH). Jobs with an active run
+    are also excluded: a copy time-window (BackupJob.copy_window_*) can
+    now leave a SCHEDULE-mode run legitimately PENDING for hours waiting
+    for its window to open, and last_run_at-anchored missed-run detection
+    would otherwise misread that as overdue.
     """
     now_naive = as_naive_utc(now or datetime.now(UTC))
     raised_count = 0
 
     async with session_maker() as session:
+        active_run_subq = select(JobRun.backup_job_id).where(
+            JobRun.status.in_((JobRunStatus.PENDING, JobRunStatus.RUNNING))
+        )
         jobs = (
-            (await session.execute(select(BackupJob).where(BackupJob.is_enabled.is_(True))))
+            (
+                await session.execute(
+                    select(BackupJob).where(
+                        BackupJob.is_enabled.is_(True),
+                        BackupJob.trigger_mode == TriggerMode.SCHEDULE,
+                        BackupJob.id.not_in(active_run_subq),
+                    )
+                )
+            )
             .scalars()
             .all()
         )

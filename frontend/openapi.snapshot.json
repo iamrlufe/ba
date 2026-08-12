@@ -1631,6 +1631,79 @@
                 }
             }
         },
+        "/api/backup-jobs/{backup_job_id}/watch-events": {
+            "post": {
+                "tags": [
+                    "backup-jobs"
+                ],
+                "summary": "Report Watch Event",
+                "operationId": "report_watch_event_api_backup_jobs__backup_job_id__watch_events_post",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "backup_job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "title": "Backup Job Id"
+                        }
+                    },
+                    {
+                        "name": "X-Agent-Key",
+                        "in": "header",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "X-Agent-Key"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/WatchEventRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/WatchEventResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/agents/{server_id}/heartbeat": {
             "post": {
                 "tags": [
@@ -3974,7 +4047,8 @@
                     "DISK_SPACE_CRITICAL",
                     "SERVER_UNREACHABLE",
                     "AGENT_OFFLINE",
-                    "RESTORE_FAILED"
+                    "RESTORE_FAILED",
+                    "WATCH_FILE_LOCK_TIMEOUT"
                 ],
                 "title": "AlertType"
             },
@@ -3999,19 +4073,50 @@
                         "title": "Database Name"
                     },
                     "source_path": {
-                        "type": "string",
-                        "maxLength": 500,
-                        "minLength": 1,
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 500,
+                                "minLength": 1
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
                         "title": "Source Path"
                     },
                     "backup_type": {
                         "$ref": "#/components/schemas/BackupType",
                         "default": "FULL"
                     },
+                    "trigger_mode": {
+                        "$ref": "#/components/schemas/TriggerMode",
+                        "default": "SCHEDULE"
+                    },
+                    "watch_directory": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 500,
+                                "minLength": 1
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Watch Directory"
+                    },
                     "schedule_cron": {
-                        "type": "string",
-                        "maxLength": 120,
-                        "minLength": 1,
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 120,
+                                "minLength": 1
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
                         "title": "Schedule Cron"
                     },
                     "timezone": {
@@ -4061,6 +4166,37 @@
                         "exclusiveMinimum": 0.0,
                         "title": "Missed Run Grace Minutes",
                         "default": 60
+                    },
+                    "copy_window_start_hour": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 23.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Copy Window Start Hour"
+                    },
+                    "copy_window_end_hour": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 23.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Copy Window End Hour"
+                    },
+                    "copy_window_weekend_unrestricted": {
+                        "type": "boolean",
+                        "title": "Copy Window Weekend Unrestricted",
+                        "default": false
                     },
                     "local_backup_path_pattern": {
                         "anyOf": [
@@ -4102,8 +4238,6 @@
                 "type": "object",
                 "required": [
                     "name",
-                    "source_path",
-                    "schedule_cron",
                     "server_id",
                     "disk_id"
                 ],
@@ -4130,19 +4264,50 @@
                         "title": "Database Name"
                     },
                     "source_path": {
-                        "type": "string",
-                        "maxLength": 500,
-                        "minLength": 1,
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 500,
+                                "minLength": 1
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
                         "title": "Source Path"
                     },
                     "backup_type": {
                         "$ref": "#/components/schemas/BackupType",
                         "default": "FULL"
                     },
+                    "trigger_mode": {
+                        "$ref": "#/components/schemas/TriggerMode",
+                        "default": "SCHEDULE"
+                    },
+                    "watch_directory": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 500,
+                                "minLength": 1
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Watch Directory"
+                    },
                     "schedule_cron": {
-                        "type": "string",
-                        "maxLength": 120,
-                        "minLength": 1,
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 120,
+                                "minLength": 1
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
                         "title": "Schedule Cron"
                     },
                     "timezone": {
@@ -4192,6 +4357,37 @@
                         "exclusiveMinimum": 0.0,
                         "title": "Missed Run Grace Minutes",
                         "default": 60
+                    },
+                    "copy_window_start_hour": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 23.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Copy Window Start Hour"
+                    },
+                    "copy_window_end_hour": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 23.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Copy Window End Hour"
+                    },
+                    "copy_window_weekend_unrestricted": {
+                        "type": "boolean",
+                        "title": "Copy Window Weekend Unrestricted",
+                        "default": false
                     },
                     "local_backup_path_pattern": {
                         "anyOf": [
@@ -4270,8 +4466,6 @@
                 "type": "object",
                 "required": [
                     "name",
-                    "source_path",
-                    "schedule_cron",
                     "id",
                     "server_id",
                     "disk_id",
@@ -4333,6 +4527,29 @@
                                 "type": "null"
                             }
                         ]
+                    },
+                    "trigger_mode": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/TriggerMode"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "watch_directory": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 500,
+                                "minLength": 1
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Watch Directory"
                     },
                     "schedule_cron": {
                         "anyOf": [
@@ -4418,6 +4635,43 @@
                             }
                         ],
                         "title": "Missed Run Grace Minutes"
+                    },
+                    "copy_window_start_hour": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 23.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Copy Window Start Hour"
+                    },
+                    "copy_window_end_hour": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "maximum": 23.0,
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Copy Window End Hour"
+                    },
+                    "copy_window_weekend_unrestricted": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Copy Window Weekend Unrestricted"
                     },
                     "local_backup_path_pattern": {
                         "anyOf": [
@@ -7051,6 +7305,14 @@
                 ],
                 "title": "TelegramLinkResponse"
             },
+            "TriggerMode": {
+                "type": "string",
+                "enum": [
+                    "SCHEDULE",
+                    "WATCH"
+                ],
+                "title": "TriggerMode"
+            },
             "UserCreate": {
                 "properties": {
                     "username": {
@@ -7349,6 +7611,76 @@
                 ],
                 "title": "VerificationType",
                 "description": "Discriminates what kind of check a VerificationRun row represents.\n\nRESTORE_VERIFYONLY: app/workers/backup_verification.py's SQL Server\nRESTORE VERIFYONLY flow (the only kind that existed before this enum\nwas introduced -- every pre-existing row backfills to this value).\nFTP_COPY_INTEGRITY: a filesystem-level SHA-256 comparison against a\n`<file>.sha256` sidecar, reported by a future standalone agent via\napp/workers/copy_verification.py."
+            },
+            "WatchEventRequest": {
+                "properties": {
+                    "event_type": {
+                        "$ref": "#/components/schemas/WatchEventType"
+                    },
+                    "active": {
+                        "type": "boolean",
+                        "title": "Active"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "minLength": 1,
+                        "title": "File Path"
+                    },
+                    "detail": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "maxLength": 2000
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Detail"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "event_type",
+                    "active",
+                    "file_path"
+                ],
+                "title": "WatchEventRequest"
+            },
+            "WatchEventResponse": {
+                "properties": {
+                    "alert_raised": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/AlertRead"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "alert_resolved": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/AlertRead"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    }
+                },
+                "type": "object",
+                "title": "WatchEventResponse"
+            },
+            "WatchEventType": {
+                "type": "string",
+                "enum": [
+                    "FILE_LOCK_TIMEOUT"
+                ],
+                "title": "WatchEventType"
             }
         },
         "securitySchemes": {
