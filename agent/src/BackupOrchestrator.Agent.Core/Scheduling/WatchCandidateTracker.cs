@@ -76,6 +76,23 @@ public sealed class WatchCandidateTracker
         }
     }
 
+    /// <summary>
+    /// Read-only peek: true if a candidate is currently held for
+    /// backupJobId, without consuming it (unlike ClaimForDispatch). Used by
+    /// WatchHostedService to decide whether ending-and-immediately-restarting
+    /// a dispatch cycle is worth doing, breaking the unconditional-restart
+    /// recursion that previously caused a StackOverflowException on
+    /// zero-suspension dispatch cycles (unrestricted copy window + nothing
+    /// claimed).
+    /// </summary>
+    public bool HasHeldCandidate(int backupJobId)
+    {
+        lock (_gate)
+        {
+            return _heldCandidateByJobId.ContainsKey(backupJobId);
+        }
+    }
+
     public WatchCandidateFile? ClaimForDispatch(int backupJobId)
     {
         lock (_gate)

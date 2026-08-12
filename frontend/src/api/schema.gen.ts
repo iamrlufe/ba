@@ -499,6 +499,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/job-runs/{job_run_id}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim Job Run
+         * @description Marks a manually-triggered PENDING run as dispatched (claimed) by an
+         *     agent, without creating anything -- POST /api/job-runs remains the sole
+         *     creation endpoint. Only manual-trigger runs are ever claimable:
+         *     scheduler/watch-triggered runs already have dispatched_at set at INSERT
+         *     time (see create_job_run) and are never claim-eligible.
+         */
+        post: operations["claim_job_run_api_job_runs__job_run_id__claim_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/job-runs/{job_run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Job Run
+         * @description Admin-only, human-initiated cancellation of a PENDING/RUNNING run.
+         *     Never touches Alert state (mirrors complete_job_run's own CANCELLED
+         *     handling) -- JOB_STUCK_PENDING is exclusively the stuck-pending
+         *     detector's responsibility (app.workers.alert_worker.
+         *     check_stuck_pending_dispatch), not this endpoint's.
+         */
+        post: operations["cancel_job_run_api_job_runs__job_run_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/backup-records": {
         parameters: {
             query?: never;
@@ -949,7 +997,7 @@ export interface components {
          * AlertType
          * @enum {string}
          */
-        AlertType: "JOB_FAILED" | "JOB_MISSED" | "JOB_TIMEOUT" | "VERIFICATION_FAILED" | "BACKUP_VERIFICATION_FAILED" | "FTP_COPY_INTEGRITY_FAILED" | "DISK_SPACE_LOW" | "DISK_SPACE_CRITICAL" | "SERVER_UNREACHABLE" | "AGENT_OFFLINE" | "RESTORE_FAILED" | "WATCH_FILE_LOCK_TIMEOUT";
+        AlertType: "JOB_FAILED" | "JOB_MISSED" | "JOB_TIMEOUT" | "VERIFICATION_FAILED" | "BACKUP_VERIFICATION_FAILED" | "FTP_COPY_INTEGRITY_FAILED" | "DISK_SPACE_LOW" | "DISK_SPACE_CRITICAL" | "SERVER_UNREACHABLE" | "AGENT_OFFLINE" | "RESTORE_FAILED" | "WATCH_FILE_LOCK_TIMEOUT" | "JOB_STUCK_PENDING";
         /** BackupJobCreate */
         BackupJobCreate: {
             /** Name */
@@ -990,6 +1038,11 @@ export interface components {
              * @default 60
              */
             missed_run_grace_minutes: number;
+            /**
+             * Pending To Running Grace Minutes
+             * @default 30
+             */
+            pending_to_running_grace_minutes: number;
             /** Copy Window Start Hour */
             copy_window_start_hour?: number | null;
             /** Copy Window End Hour */
@@ -1053,6 +1106,11 @@ export interface components {
              * @default 60
              */
             missed_run_grace_minutes: number;
+            /**
+             * Pending To Running Grace Minutes
+             * @default 30
+             */
+            pending_to_running_grace_minutes: number;
             /** Copy Window Start Hour */
             copy_window_start_hour?: number | null;
             /** Copy Window End Hour */
@@ -1088,6 +1146,18 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Sql Instance Host */
+            sql_instance_host?: string | null;
+            /** Sql Instance Port */
+            sql_instance_port?: number | null;
+            /** Sql Instance Instance Name */
+            sql_instance_instance_name?: string | null;
+            /** Sql Instance Use Windows Auth */
+            sql_instance_use_windows_auth?: boolean | null;
+            /** Pending Manual Run Id */
+            pending_manual_run_id?: number | null;
+            /** Cancel Requested Run Id */
+            cancel_requested_run_id?: number | null;
         };
         /** BackupJobUpdate */
         BackupJobUpdate: {
@@ -1115,6 +1185,8 @@ export interface components {
             expected_max_duration_minutes?: number | null;
             /** Missed Run Grace Minutes */
             missed_run_grace_minutes?: number | null;
+            /** Pending To Running Grace Minutes */
+            pending_to_running_grace_minutes?: number | null;
             /** Copy Window Start Hour */
             copy_window_start_hour?: number | null;
             /** Copy Window End Hour */
@@ -1328,7 +1400,11 @@ export interface components {
          *     `PATCH /api/job-runs/{id}` instead.
          */
         JobRunCompleteRequest: {
-            status: components["schemas"]["JobRunStatus"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "SUCCESS" | "WARNING" | "FAILED" | "CANCELLED";
             /** Finished At */
             finished_at?: string | null;
             /** File Path */
@@ -1350,8 +1426,9 @@ export interface components {
             /**
              * Triggered By
              * @default manual
+             * @enum {string}
              */
-            triggered_by: string;
+            triggered_by: "scheduler" | "watch" | "manual";
         };
         /** JobRunLogRead */
         JobRunLogRead: {
@@ -1393,12 +1470,20 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Dispatched At */
+            dispatched_at: string | null;
+            /** Cancel Requested At */
+            cancel_requested_at: string | null;
+            /** Cancel Requested By */
+            cancel_requested_by: string | null;
+            /** Cancel Acknowledged At */
+            cancel_acknowledged_at: string | null;
         };
         /**
          * JobRunStatus
          * @enum {string}
          */
-        JobRunStatus: "PENDING" | "RUNNING" | "SUCCESS" | "WARNING" | "FAILED" | "CANCELLED" | "TIMEOUT";
+        JobRunStatus: "PENDING" | "RUNNING" | "SUCCESS" | "WARNING" | "FAILED" | "CANCELLED" | "TIMEOUT" | "STUCK";
         /**
          * JobRunUpdate
          * @description Structural validation only.
@@ -3412,6 +3497,70 @@ export interface operations {
                 "application/json": components["schemas"]["JobRunCompleteRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobRunRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    claim_job_run_api_job_runs__job_run_id__claim_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Agent-Key"?: string | null;
+            };
+            path: {
+                job_run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobRunRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_job_run_api_job_runs__job_run_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

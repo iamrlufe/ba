@@ -17,4 +17,13 @@ public enum JobRunStatus
     FAILED,
     CANCELLED,
     TIMEOUT,
+
+    /// <summary>
+    /// Backend-worker-only terminal status for its own stuck-PENDING
+    /// auto-detection. Added here purely for wire-format parity with the
+    /// backend enum -- a STUCK run by definition never had DispatchedAt set
+    /// and the agent never touched it, so no agent control-flow branches on
+    /// this value.
+    /// </summary>
+    STUCK,
 }

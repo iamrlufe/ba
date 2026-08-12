@@ -251,6 +251,12 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
           ? Number(values.expected_max_duration_minutes)
           : null,
         missed_run_grace_minutes: values.missed_run_grace_minutes,
+        // Not yet exposed as a form field (out of scope of the current spec);
+        // pinned to the backend's own documented default (see
+        // BackupJobCreate.pending_to_running_grace_minutes) so job creation
+        // keeps compiling/working against the live schema. Needs a real form
+        // field + spec before this should be considered done.
+        pending_to_running_grace_minutes: 30,
         copy_window_start_hour: values.copy_window_start_hour ?? null,
         copy_window_end_hour: values.copy_window_end_hour ?? null,
         copy_window_weekend_unrestricted: values.copy_window_weekend_unrestricted,

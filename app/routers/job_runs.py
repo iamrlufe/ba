@@ -4,14 +4,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_current_user, require_admin_or_agent_key
+from app.core.auth import get_current_user, require_admin_or_agent_key, require_role
 from app.core.db import get_db
 from app.core.timeutils import as_naive_utc as _as_naive_utc
 from app.core.ws_manager import manager
 from app.models.alert import Alert
 from app.models.backup_job import BackupJob
-from app.models.enums import JOB_RUN_TERMINAL_STATUSES, AlertSeverity, AlertType, JobRunStatus
+from app.models.enums import (
+    JOB_RUN_TERMINAL_STATUSES,
+    AlertSeverity,
+    AlertType,
+    JobRunStatus,
+    TriggerMode,
+    UserRole,
+)
 from app.models.job_run import JobRun
+from app.models.user import User
 from app.routers._alerts import raise_alert_if_absent, resolve_active_alert
 from app.routers._deps import get_or_404
 from app.schemas.common import PaginatedResponse
@@ -27,6 +35,27 @@ from app.schemas.job_run import (
 router = APIRouter(tags=["job-runs"])
 
 
+async def _auto_acknowledge_cancelled(session: AsyncSession, job_run_id: int) -> None:
+    """Best-effort side effect: if this run is CANCELLED and not yet
+    acknowledged, mark it acknowledged -- called right before
+    update_job_run/complete_job_run raise their "already terminal" 409, on
+    the theory that whatever just PATCHed/completed a CANCELLED run has, by
+    virtue of that very call, observably reacted to the cancellation. No-op
+    (and must never itself raise or block the caller's 409) if the terminal
+    status wasn't CANCELLED or was already acknowledged.
+    """
+    await session.execute(
+        update(JobRun)
+        .where(
+            JobRun.id == job_run_id,
+            JobRun.status == JobRunStatus.CANCELLED,
+            JobRun.cancel_acknowledged_at.is_(None),
+        )
+        .values(cancel_acknowledged_at=datetime.now(UTC))
+    )
+    await session.commit()
+
+
 @router.post(
     "",
     response_model=JobRunRead,
@@ -37,12 +66,31 @@ async def create_job_run(payload: JobRunCreate, session: AsyncSession = Depends(
     job = await get_or_404(session, BackupJob, payload.backup_job_id)
     if not job.is_enabled:
         raise HTTPException(status_code=409, detail="Cannot start a run for a disabled backup job")
+    if payload.triggered_by == "manual" and job.trigger_mode == TriggerMode.WATCH:
+        # WATCH jobs have no source_path -- a manual run could never
+        # actually execute anyway.
+        raise HTTPException(
+            status_code=409,
+            detail="Manual triggering is not supported for WATCH-mode jobs",
+        )
 
     # Deliberately no local try/except around the INSERT: if there is
     # already an active (PENDING/RUNNING) run for this backup_job_id, the
     # partial unique index raises IntegrityError on commit, which the
     # global handler converts to 409.
-    run = JobRun(backup_job_id=payload.backup_job_id, triggered_by=payload.triggered_by)
+    #
+    # dispatched_at is set immediately for scheduler/watch-triggered runs
+    # (the scheduler/watch-detector is itself the dispatch mechanism -- it
+    # only creates the run once it's ready to act on it); manual runs stay
+    # NULL until a human/agent explicitly claims them via
+    # POST /api/job-runs/{id}/claim. See
+    # app.workers.alert_worker.check_stuck_pending_dispatch, which watches
+    # for dispatched_at staying NULL too long.
+    run = JobRun(
+        backup_job_id=payload.backup_job_id,
+        triggered_by=payload.triggered_by,
+        dispatched_at=datetime.now(UTC) if payload.triggered_by in ("scheduler", "watch") else None,
+    )
     session.add(run)
     await session.commit()
     await session.refresh(run)
@@ -102,6 +150,7 @@ async def update_job_run(
     expected_status = run.status
 
     if expected_status in JOB_RUN_TERMINAL_STATUSES:
+        await _auto_acknowledge_cancelled(session, job_run_id)
         raise HTTPException(status_code=409, detail="Cannot modify a job run that has already finished")
 
     if payload.status is not None:
@@ -158,6 +207,7 @@ async def complete_job_run(
     expected_status = run.status
 
     if expected_status in JOB_RUN_TERMINAL_STATUSES:
+        await _auto_acknowledge_cancelled(session, job_run_id)
         raise HTTPException(status_code=409, detail="Job run has already been completed")
 
     finished_at = payload.finished_at or datetime.now(UTC)
@@ -220,5 +270,105 @@ async def complete_job_run(
     payload_json = run_read.model_dump(mode="json")
     await manager.broadcast(job_run_id, payload_json)
     await manager.close_all(job_run_id, code=1000, reason="job run finished")
+
+    return run
+
+
+@router.post(
+    "/{job_run_id}/claim",
+    response_model=JobRunRead,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
+async def claim_job_run(job_run_id: int, session: AsyncSession = Depends(get_db)) -> JobRun:
+    """Marks a manually-triggered PENDING run as dispatched (claimed) by an
+    agent, without creating anything -- POST /api/job-runs remains the sole
+    creation endpoint. Only manual-trigger runs are ever claimable:
+    scheduler/watch-triggered runs already have dispatched_at set at INSERT
+    time (see create_job_run) and are never claim-eligible.
+    """
+    run = await get_or_404(session, JobRun, job_run_id)
+
+    # CAS guard, same pattern as update_job_run/complete_job_run: the
+    # UPDATE only succeeds if the run is still exactly in the claimable
+    # state (PENDING, never dispatched, manual trigger) at write time.
+    result = await session.execute(
+        update(JobRun)
+        .where(
+            JobRun.id == job_run_id,
+            JobRun.status == JobRunStatus.PENDING,
+            JobRun.dispatched_at.is_(None),
+            JobRun.triggered_by == "manual",
+        )
+        .values(dispatched_at=datetime.now(UTC))
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Job run is not claimable (already claimed, already started, or not a manual trigger)",
+        )
+    await session.commit()
+    await session.refresh(run)
+
+    return run
+
+
+@router.post(
+    "/{job_run_id}/cancel",
+    response_model=JobRunRead,
+)
+async def cancel_job_run(
+    job_run_id: int,
+    session: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+) -> JobRun:
+    """Admin-only, human-initiated cancellation of a PENDING/RUNNING run.
+    Never touches Alert state (mirrors complete_job_run's own CANCELLED
+    handling) -- JOB_STUCK_PENDING is exclusively the stuck-pending
+    detector's responsibility (app.workers.alert_worker.
+    check_stuck_pending_dispatch), not this endpoint's.
+    """
+    run = await get_or_404(session, JobRun, job_run_id)
+
+    now = datetime.now(UTC)
+    duration_seconds = (
+        int((_as_naive_utc(now) - _as_naive_utc(run.started_at)).total_seconds())
+        if run.started_at is not None
+        else None
+    )
+
+    # CAS guard, same pattern as update_job_run/complete_job_run: the
+    # UPDATE only succeeds if the run is still in an active status (PENDING
+    # or RUNNING) at write time, regardless of what it was when read above.
+    result = await session.execute(
+        update(JobRun)
+        .where(JobRun.id == job_run_id, JobRun.status.in_((JobRunStatus.PENDING, JobRunStatus.RUNNING)))
+        .values(
+            status=JobRunStatus.CANCELLED,
+            finished_at=now,
+            duration_seconds=duration_seconds,
+            cancel_requested_at=now,
+            cancel_requested_by=current_user.username,
+            error_message=f"Cancelled by operator {current_user.username}",
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=409, detail="Job run is already terminal and cannot be cancelled"
+        )
+    await session.refresh(run)
+
+    job = await get_or_404(session, BackupJob, run.backup_job_id)
+    job.last_run_at = now
+    # CANCELLED: no alert changes -- see complete_job_run's identical
+    # "CANCELLED: no alert changes" comment.
+
+    await session.commit()
+    await session.refresh(run)
+
+    run_read = JobRunRead.model_validate(run)
+    await manager.broadcast(job_run_id, run_read.model_dump(mode="json"))
+    await manager.close_all(job_run_id, code=1000, reason="job run cancelled")
 
     return run

@@ -100,9 +100,11 @@ export function JobDetailPage() {
                   Verify now
                 </Button>
               </WithTooltip>
-              <Button variant="outline" disabled={!job.is_enabled || runNowMutation.isPending} onClick={() => runNowMutation.mutate()}>
-                Run now
-              </Button>
+              {job.trigger_mode === "WATCH" ? null : (
+                <Button variant="outline" disabled={!job.is_enabled || runNowMutation.isPending} onClick={() => runNowMutation.mutate()}>
+                  Run now
+                </Button>
+              )}
               <Button variant="outline" onClick={() => navigate(`/jobs/${job.id}/edit`)}>
                 Edit
               </Button>

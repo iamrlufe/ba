@@ -185,7 +185,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         }
     }
 
-    public async Task<JobRunDto> CreateJobRunAsync(JobRunCreateRequest request, CancellationToken cancellationToken)
+    public async Task<JobRunDto?> CreateJobRunAsync(JobRunCreateRequest request, CancellationToken cancellationToken)
     {
         const string uri = "/api/job-runs";
         using var response = await ExecuteAsync(
@@ -195,6 +195,42 @@ public sealed class HttpBackendApiClient : IBackendApiClient
             cancellationToken);
 
         LogOutcome("POST", uri, response.StatusCode);
+
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            // Expected per spec: job disabled, or an active run already
+            // exists. Not an error -- log at Information, do not retry.
+            _logger.LogInformation("{Uri} returned 409: job disabled or an active run already exists, skipping this fire", uri);
+            return null;
+        }
+
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadFromJsonAsync<JobRunDto>(AgentJsonOptions.Default, cancellationToken)
+            ?? throw new BackendUnavailableException($"POST {uri} returned an empty body");
+    }
+
+    public async Task<JobRunDto?> ClaimJobRunAsync(int jobRunId, CancellationToken cancellationToken)
+    {
+        var uri = $"/api/job-runs/{jobRunId}/claim";
+        using var response = await ExecuteAsync(
+            _defaultRetryPipeline,
+            static r => IsRetryableStatus(r.StatusCode),
+            () => new HttpRequestMessage(HttpMethod.Post, uri),
+            cancellationToken);
+
+        LogOutcome("POST", uri, response.StatusCode);
+
+        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
+        {
+            // Expected per spec: lost the race to a concurrent dispatch
+            // cycle (already claimed/started), or the run no longer exists.
+            // Not an error -- log at Information, do not retry this tick.
+            _logger.LogInformation(
+                "{Uri} returned {StatusCode}: already claimed by a concurrent cycle or run no longer exists", uri, (int)response.StatusCode);
+            return null;
+        }
+
         response.EnsureSuccessStatusCode();
 
         return await response.Content.ReadFromJsonAsync<JobRunDto>(AgentJsonOptions.Default, cancellationToken)

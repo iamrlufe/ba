@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -17,7 +18,7 @@ class JobRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     backup_job_id: int
-    triggered_by: str = Field(default="manual", min_length=1, max_length=50)
+    triggered_by: Literal["scheduler", "watch", "manual"] = "manual"
 
 
 class JobRunUpdate(BaseModel):
@@ -64,7 +65,25 @@ class JobRunCompleteRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: JobRunStatus
+    # Deliberately a closed Literal set -- NOT "any terminal JobRunStatus" --
+    # so this endpoint's contract stays exactly SUCCESS/WARNING/FAILED/
+    # CANCELLED regardless of what else gets added to
+    # JOB_RUN_TERMINAL_STATUSES in the future. TIMEOUT and STUCK are set
+    # exclusively by the background worker's own direct CAS UPDATEs
+    # (app.workers.alert_worker.check_job_timeouts and
+    # check_stuck_pending_dispatch, respectively) and must never be
+    # reachable through this caller-supplied endpoint -- POST .../complete
+    # is reachable via the shared X-Agent-Key (one secret across all
+    # agents), so accepting TIMEOUT/STUCK here would let any caller mark a
+    # genuinely FAILED run as something that skips complete_job_run's
+    # JOB_FAILED alert logic and also bypasses the dedicated STUCK
+    # bookkeeping in check_stuck_pending_dispatch entirely.
+    status: Literal[
+        JobRunStatus.SUCCESS,
+        JobRunStatus.WARNING,
+        JobRunStatus.FAILED,
+        JobRunStatus.CANCELLED,
+    ]
     finished_at: datetime | None = None
     file_path: str | None = Field(default=None, max_length=500)
     file_size_bytes: int | None = Field(default=None, ge=0)
@@ -72,15 +91,6 @@ class JobRunCompleteRequest(BaseModel):
     verification_details: str | None = None
     error_message: str | None = None
     log_output: str | None = None
-
-    @field_validator("status")
-    @classmethod
-    def _status_must_be_terminal(cls, value: JobRunStatus) -> JobRunStatus:
-        if value not in JOB_RUN_TERMINAL_STATUSES:
-            raise ValueError(
-                f"status must be one of the terminal statuses {sorted(s.value for s in JOB_RUN_TERMINAL_STATUSES)}"
-            )
-        return value
 
     @field_validator("finished_at")
     @classmethod
@@ -123,6 +133,10 @@ class JobRunRead(BaseModel):
     current_file: str | None
     bytes_done: int | None
     created_at: UtcDatetime
+    dispatched_at: UtcDatetime | None
+    cancel_requested_at: UtcDatetime | None
+    cancel_requested_by: str | None
+    cancel_acknowledged_at: UtcDatetime | None
     # log_output intentionally excluded -- see JobRunLogRead.
 
 

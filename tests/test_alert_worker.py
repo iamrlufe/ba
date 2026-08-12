@@ -35,7 +35,12 @@ from app.models.enums import (
 )
 from app.models.job_run import JobRun
 from app.models.server import Server
-from app.workers.alert_worker import check_agent_offline, check_job_timeouts, check_missed_runs
+from app.workers.alert_worker import (
+    check_agent_offline,
+    check_job_timeouts,
+    check_missed_runs,
+    check_stuck_pending_dispatch,
+)
 from tests.conftest import (
     build_backup_job,
     build_disk,
@@ -635,3 +640,119 @@ async def test_timeout_transition_lets_next_missed_runs_tick_resolve_job_missed(
     assert resolved_tick_count == 0
     assert await _active_alert_count(session_maker, AlertType.JOB_MISSED) == 0
     assert await _active_alert_count(session_maker, AlertType.JOB_MISSED, AlertStatus.RESOLVED) == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. check_stuck_pending_dispatch
+# ---------------------------------------------------------------------------
+
+
+async def test_check_stuck_pending_dispatch_marks_stale_manual_run_stuck_and_raises_alert(
+    session, session_maker
+):
+    job = await _enabled_job(session, pending_to_running_grace_minutes=30)
+    run = build_job_run(
+        job.id,
+        status=JobRunStatus.PENDING,
+        triggered_by="manual",
+        dispatched_at=None,
+        created_at=NOW - timedelta(minutes=45),
+    )
+    session.add(run)
+    await session.commit()
+    run_id = run.id
+
+    count = await check_stuck_pending_dispatch(session_maker, now=NOW)
+    assert count == 1
+
+    async with session_maker() as s:
+        refreshed = await s.get(JobRun, run_id)
+        assert refreshed.status == JobRunStatus.STUCK
+        assert refreshed.finished_at is not None
+        assert refreshed.cancel_requested_at is not None
+        assert refreshed.cancel_requested_by == "system:stuck_pending_detector"
+        assert refreshed.cancel_acknowledged_at is not None
+        assert refreshed.error_message is not None
+
+        db_job = await s.get(BackupJob, job.id)
+        assert db_job.last_run_at is not None
+
+    assert await _active_alert_count(session_maker, AlertType.JOB_STUCK_PENDING) == 1
+
+    # Dedup on repeat tick -- no second alert for the same backup job.
+    second = await check_stuck_pending_dispatch(session_maker, now=NOW + timedelta(minutes=5))
+    assert second == 0
+    assert await _active_alert_count(session_maker, AlertType.JOB_STUCK_PENDING) == 1
+
+
+async def test_check_stuck_pending_dispatch_young_manual_run_left_alone(session, session_maker):
+    job = await _enabled_job(session, pending_to_running_grace_minutes=30)
+    run = build_job_run(
+        job.id,
+        status=JobRunStatus.PENDING,
+        triggered_by="manual",
+        dispatched_at=None,
+        created_at=NOW - timedelta(minutes=5),
+    )
+    session.add(run)
+    await session.commit()
+    run_id = run.id
+
+    count = await check_stuck_pending_dispatch(session_maker, now=NOW)
+    assert count == 0
+
+    async with session_maker() as s:
+        refreshed = await s.get(JobRun, run_id)
+        assert refreshed.status == JobRunStatus.PENDING
+
+    assert await _active_alert_count(session_maker, AlertType.JOB_STUCK_PENDING) == 0
+
+
+async def test_check_stuck_pending_dispatch_scheduler_run_never_touched_regardless_of_age(
+    session, session_maker
+):
+    job = await _enabled_job(session, pending_to_running_grace_minutes=30)
+    run = build_job_run(
+        job.id,
+        status=JobRunStatus.PENDING,
+        triggered_by="scheduler",
+        dispatched_at=NOW - timedelta(minutes=45),
+        created_at=NOW - timedelta(days=3),
+    )
+    session.add(run)
+    await session.commit()
+    run_id = run.id
+
+    count = await check_stuck_pending_dispatch(session_maker, now=NOW)
+    assert count == 0
+
+    async with session_maker() as s:
+        refreshed = await s.get(JobRun, run_id)
+        assert refreshed.status == JobRunStatus.PENDING
+
+    assert await _active_alert_count(session_maker, AlertType.JOB_STUCK_PENDING) == 0
+
+
+async def test_check_stuck_pending_dispatch_catches_run_on_disabled_job(session, session_maker):
+    """is_enabled is deliberately NOT a filter for this check -- a disabled
+    job's already-existing stuck manual run must still be caught."""
+    job = await _enabled_job(session, pending_to_running_grace_minutes=30, is_enabled=False)
+    run = build_job_run(
+        job.id,
+        status=JobRunStatus.PENDING,
+        triggered_by="manual",
+        dispatched_at=None,
+        created_at=NOW - timedelta(minutes=45),
+    )
+    session.add(run)
+    await session.commit()
+    run_id = run.id
+
+    count = await check_stuck_pending_dispatch(session_maker, now=NOW)
+    assert count == 1
+
+    async with session_maker() as s:
+        refreshed = await s.get(JobRun, run_id)
+        assert refreshed.status == JobRunStatus.STUCK
+
+    assert await _active_alert_count(session_maker, AlertType.JOB_STUCK_PENDING) == 1

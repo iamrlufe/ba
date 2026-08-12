@@ -27,9 +27,11 @@ from app.models.enums import (
     AgentCredentialAccessOutcome,
     AlertSeverity,
     AlertType,
+    JobRunStatus,
     ServerStatus,
     UserRole,
 )
+from app.models.job_run import JobRun
 from app.models.server import Server
 from app.models.server_metrics import ServerMetrics
 from app.routers._alerts import raise_alert_if_absent, resolve_active_alert
@@ -295,9 +297,50 @@ async def list_agent_jobs(
     total = (await session.execute(total_stmt)).scalar_one()
     items = (await session.execute(items_stmt)).scalars().all()
 
-    return PaginatedResponse[BackupJobRead](
-        items=[BackupJobRead.model_validate(j) for j in items], total=total, limit=limit, offset=offset
-    )
+    job_ids = [j.id for j in items]
+    pending_manual_run_by_job: dict[int, int] = {}
+    cancel_requested_run_by_job: dict[int, int] = {}
+    if job_ids:
+        pending_manual_rows = (
+            await session.execute(
+                select(JobRun.backup_job_id, JobRun.id).where(
+                    JobRun.backup_job_id.in_(job_ids),
+                    JobRun.status == JobRunStatus.PENDING,
+                    JobRun.triggered_by == "manual",
+                )
+            )
+        ).all()
+        for backup_job_id, run_id in pending_manual_rows:
+            # At most one PENDING run per backup_job_id (see
+            # uq_job_runs_active_per_backup_job), so no first-wins ordering
+            # concern here -- unlike cancel_requested_run_by_job below.
+            pending_manual_run_by_job[backup_job_id] = run_id
+
+        cancel_requested_rows = (
+            await session.execute(
+                select(JobRun.backup_job_id, JobRun.id)
+                .where(
+                    JobRun.backup_job_id.in_(job_ids),
+                    JobRun.status == JobRunStatus.CANCELLED,
+                    JobRun.cancel_acknowledged_at.is_(None),
+                )
+                .order_by(JobRun.id.desc())
+            )
+        ).all()
+        for backup_job_id, run_id in cancel_requested_rows:
+            # First row encountered per backup_job_id is the highest id
+            # (most recent), due to the ORDER BY above -- setdefault keeps
+            # only that one.
+            cancel_requested_run_by_job.setdefault(backup_job_id, run_id)
+
+    job_reads: list[BackupJobRead] = []
+    for j in items:
+        job_read = BackupJobRead.model_validate(j)
+        job_read.pending_manual_run_id = pending_manual_run_by_job.get(j.id)
+        job_read.cancel_requested_run_id = cancel_requested_run_by_job.get(j.id)
+        job_reads.append(job_read)
+
+    return PaginatedResponse[BackupJobRead](items=job_reads, total=total, limit=limit, offset=offset)
 
 
 @router.get(

@@ -103,6 +103,15 @@ class BackupJob(TimestampMixin, Base):
     missed_run_grace_minutes: Mapped[int] = mapped_column(
         Integer, nullable=False, default=60, server_default="60"
     )
+    # How long a JobRun may sit PENDING with dispatched_at IS NULL (never
+    # claimed/dispatched to an agent) before
+    # app.workers.alert_worker.check_stuck_pending_dispatch auto-marks it
+    # STUCK and raises AlertType.JOB_STUCK_PENDING. Deliberately NOT gated
+    # on is_enabled -- a disabled job's stuck manual run must still be
+    # caught.
+    pending_to_running_grace_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30, server_default="30"
+    )
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Copy time-window: applies to BOTH trigger modes, deferring the actual

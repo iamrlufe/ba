@@ -38,7 +38,23 @@ public interface IBackendApiClient
     /// </summary>
     Task<ConnectionConfigResult> GetConnectionConfigAsync(int serverId, CancellationToken cancellationToken);
 
-    Task<JobRunDto> CreateJobRunAsync(JobRunCreateRequest request, CancellationToken cancellationToken);
+    /// <summary>
+    /// POST /api/job-runs. Returns null on 409 (job disabled, or an active
+    /// run already exists) -- not an error, callers must skip this fire
+    /// without logging at Warning/Error. Still throws
+    /// BackendUnavailableException on exhausted retries, same as every
+    /// other method on this interface.
+    /// </summary>
+    Task<JobRunDto?> CreateJobRunAsync(JobRunCreateRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /api/job-runs/{job_run_id}/claim, no body. Returns the claimed
+    /// JobRunDto on 200. Returns null on 409/404 -- lost the race to a
+    /// concurrent dispatch cycle, or the run no longer exists -- not an
+    /// error, callers must log at Information and not retry within the same
+    /// tick. Still throws BackendUnavailableException on exhausted retries.
+    /// </summary>
+    Task<JobRunDto?> ClaimJobRunAsync(int jobRunId, CancellationToken cancellationToken);
 
     Task<JobRunUpdateOutcome> PatchJobRunAsync(int jobRunId, JobRunPatch patch, CancellationToken cancellationToken);
 

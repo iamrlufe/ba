@@ -14,9 +14,10 @@ from app.models.enums import (
     AgentCredentialAccessAuthMethod,
     AgentCredentialAccessOutcome,
     AlertType,
+    JobRunStatus,
     ServerStatus,
 )
-from tests.conftest import build_backup_job, build_disk, build_server
+from tests.conftest import build_backup_job, build_disk, build_job_run, build_server
 
 
 async def test_heartbeat_missing_server_is_404(admin_client):
@@ -420,6 +421,126 @@ async def test_list_agent_jobs_pagination(admin_client, session):
             assert item["id"] not in seen_ids
             seen_ids.add(item["id"])
     assert seen_ids == all_ids
+
+
+# --------------------------------------------------------------------------
+# 4. pending_manual_run_id / cancel_requested_run_id
+# --------------------------------------------------------------------------
+
+
+async def test_list_agent_jobs_shows_pending_manual_run_id(admin_client, session):
+    server, disk = await _server_with_disk(session)
+    job = build_backup_job(server.id, disk.id, is_enabled=True)
+    session.add(job)
+    await session.commit()
+    run = build_job_run(job.id, status=JobRunStatus.PENDING, triggered_by="manual")
+    session.add(run)
+    await session.commit()
+    await session.refresh(run)
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["pending_manual_run_id"] == run.id
+    assert items[0]["cancel_requested_run_id"] is None
+
+
+async def test_list_agent_jobs_scheduler_pending_run_not_shown_as_manual(admin_client, session):
+    """A PENDING run created by the scheduler (triggered_by != 'manual')
+    must not populate pending_manual_run_id."""
+    server, disk = await _server_with_disk(session)
+    job = build_backup_job(server.id, disk.id, is_enabled=True)
+    session.add(job)
+    await session.commit()
+    run = build_job_run(job.id, status=JobRunStatus.PENDING, triggered_by="scheduler")
+    session.add(run)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    items = resp.json()["items"]
+    assert items[0]["pending_manual_run_id"] is None
+
+
+async def test_list_agent_jobs_shows_cancel_requested_run_id(admin_client, session):
+    server, disk = await _server_with_disk(session)
+    job = build_backup_job(server.id, disk.id, is_enabled=True)
+    session.add(job)
+    await session.commit()
+    run = build_job_run(
+        job.id,
+        status=JobRunStatus.CANCELLED,
+        cancel_requested_by="admin-tester",
+        cancel_acknowledged_at=None,
+    )
+    session.add(run)
+    await session.commit()
+    await session.refresh(run)
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items[0]["cancel_requested_run_id"] == run.id
+    assert items[0]["pending_manual_run_id"] is None
+
+
+async def test_list_agent_jobs_acknowledged_cancel_not_shown(admin_client, session):
+    """A CANCELLED run that has already been acknowledged
+    (cancel_acknowledged_at set) must not populate cancel_requested_run_id
+    -- only *unacknowledged* cancellations are surfaced to the agent."""
+    from datetime import UTC, datetime
+
+    server, disk = await _server_with_disk(session)
+    job = build_backup_job(server.id, disk.id, is_enabled=True)
+    session.add(job)
+    await session.commit()
+    run = build_job_run(
+        job.id,
+        status=JobRunStatus.CANCELLED,
+        cancel_acknowledged_at=datetime.now(UTC),
+    )
+    session.add(run)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    items = resp.json()["items"]
+    assert items[0]["cancel_requested_run_id"] is None
+
+
+async def test_list_agent_jobs_neither_pending_nor_cancelled_shows_both_null(admin_client, session):
+    server, disk = await _server_with_disk(session)
+    job = build_backup_job(server.id, disk.id, is_enabled=True)
+    session.add(job)
+    await session.commit()
+    run = build_job_run(job.id, status=JobRunStatus.SUCCESS)
+    session.add(run)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    items = resp.json()["items"]
+    assert items[0]["pending_manual_run_id"] is None
+    assert items[0]["cancel_requested_run_id"] is None
+
+
+async def test_list_agent_jobs_multiple_unacknowledged_cancels_returns_most_recent(admin_client, session):
+    """At-most-one-per-job in the response: if a job somehow accumulated more
+    than one unacknowledged CANCELLED run over time, exactly one
+    cancel_requested_run_id is surfaced -- the most recent (highest id)."""
+    server, disk = await _server_with_disk(session)
+    job = build_backup_job(server.id, disk.id, is_enabled=True)
+    session.add(job)
+    await session.commit()
+    older = build_job_run(job.id, status=JobRunStatus.CANCELLED, cancel_acknowledged_at=None)
+    session.add(older)
+    await session.commit()
+    newer = build_job_run(job.id, status=JobRunStatus.CANCELLED, cancel_acknowledged_at=None)
+    session.add(newer)
+    await session.commit()
+    assert newer.id > older.id
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    items = resp.json()["items"]
+    assert items[0]["cancel_requested_run_id"] == newer.id
 
 
 # ==========================================================================

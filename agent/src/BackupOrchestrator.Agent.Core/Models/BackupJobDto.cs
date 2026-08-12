@@ -42,6 +42,23 @@ public sealed class BackupJobDto
     public int? CopyWindowEndHour { get; init; }
     public required bool CopyWindowWeekendUnrestricted { get; init; }
 
+    /// <summary>
+    /// Non-null iff an operator has requested a manual fire that hasn't yet
+    /// been claimed by any agent process. Only ever populated for
+    /// TriggerMode == "SCHEDULE" jobs -- manual triggering is
+    /// backend-forbidden (409) for WATCH-mode jobs, so this is never expected
+    /// to be set on a WATCH job.
+    /// </summary>
+    public int? PendingManualRunId { get; init; }
+
+    /// <summary>
+    /// Non-null iff an operator has requested cancellation of the run with
+    /// this id. Checked by BackupRunPipeline against the currently in-flight
+    /// run's id at a few cooperative-cancellation points (copy-window wait,
+    /// in-flight transfer poll).
+    /// </summary>
+    public int? CancelRequestedRunId { get; init; }
+
     public string? SqlInstanceHost { get; init; }
     public int? SqlInstancePort { get; init; }
     public string? SqlInstanceInstanceName { get; init; }

@@ -1,22 +1,29 @@
+import { useState } from "react";
 import { useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { FullPageSpinner } from "@/components/shared/LoadingState";
 import { ErrorState } from "@/components/shared/ErrorState";
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { JobRunStatusBadge } from "@/components/shared/StatusBadge";
 import { useAuth } from "@/auth/AuthContext";
 import { useJobRunSocket } from "@/hooks/useJobRunSocket";
 import { queryKeys } from "@/api/queryKeys";
-import { getJobRun, getJobRunLog } from "@/api/endpoints/jobRuns";
+import { cancelJobRun, getJobRun, getJobRunLog } from "@/api/endpoints/jobRuns";
 import { isJobRunTerminal } from "@/api/types";
+import { ApiError } from "@/api/client";
 import { formatBytes, formatDateTime, formatDuration } from "@/lib/utils";
 
 export function RunDetailPage() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
-  const { token } = useAuth();
+  const { isAdmin, token } = useAuth();
+  const queryClient = useQueryClient();
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   const runQuery = useQuery({
     queryKey: queryKeys.jobRuns.detail(runId),
@@ -33,6 +40,25 @@ export function RunDetailPage() {
     queryKey: queryKeys.jobRuns.log(runId),
     queryFn: () => getJobRunLog(token, runId),
     enabled: isTerminal,
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelJobRun(token, runId),
+    onSuccess: (updatedRun) => {
+      toast.success("Run cancelled");
+      queryClient.setQueryData(queryKeys.jobRuns.detail(runId), updatedRun);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobRuns.all() });
+      setCancelOpen(false);
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        toast.error("This run already finished and can't be cancelled.");
+        void queryClient.invalidateQueries({ queryKey: queryKeys.jobRuns.detail(runId) });
+      } else {
+        toast.error(error instanceof ApiError ? error.detail : "Failed to cancel run");
+      }
+      setCancelOpen(false);
+    },
   });
 
   if (runQuery.isLoading) return <FullPageSpinner />;
@@ -59,7 +85,14 @@ export function RunDetailPage() {
           <h1 className="text-2xl font-semibold">Run #{run.id}</h1>
           <p className="text-sm text-muted-foreground">Backup job #{run.backup_job_id}</p>
         </div>
-        <JobRunStatusBadge status={run.status} />
+        <div className="flex items-center gap-3">
+          <JobRunStatusBadge status={run.status} />
+          {isAdmin && !isTerminal ? (
+            <Button variant="destructive" onClick={() => setCancelOpen(true)}>
+              Cancel run
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       {connectionLabel && !isTerminal ? (
@@ -152,6 +185,18 @@ export function RunDetailPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      <ConfirmDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        title="Cancel this run?"
+        description="The agent will stop copying immediately. This cannot be undone -- trigger a new run afterward if the backup is still needed."
+        confirmLabel="Cancel run"
+        cancelLabel="Keep running"
+        destructive
+        isConfirming={cancelMutation.isPending}
+        onConfirm={() => cancelMutation.mutate()}
+      />
     </div>
   );
 }

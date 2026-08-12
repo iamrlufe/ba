@@ -43,6 +43,12 @@ class JobRunStatus(str, Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     TIMEOUT = "TIMEOUT"
+    # A PENDING run that sat with dispatched_at IS NULL (never
+    # claimed/dispatched to an agent) past BackupJob.pending_to_running_grace_minutes.
+    # Kept symmetric with (and structurally distinct from) TIMEOUT/CANCELLED
+    # -- see app.workers.alert_worker.check_stuck_pending_dispatch and
+    # AlertType.JOB_STUCK_PENDING below.
+    STUCK = "STUCK"
 
 
 class VerificationStatus(str, Enum):
@@ -73,6 +79,10 @@ class AlertType(str, Enum):
     AGENT_OFFLINE = "AGENT_OFFLINE"
     RESTORE_FAILED = "RESTORE_FAILED"
     WATCH_FILE_LOCK_TIMEOUT = "WATCH_FILE_LOCK_TIMEOUT"
+    # Raised by app.workers.alert_worker.check_stuck_pending_dispatch when a
+    # PENDING JobRun sits undispatched (dispatched_at IS NULL) past its
+    # BackupJob.pending_to_running_grace_minutes -- see JobRunStatus.STUCK.
+    JOB_STUCK_PENDING = "JOB_STUCK_PENDING"
 
 
 class AlertSeverity(str, Enum):
@@ -177,6 +187,7 @@ JOB_RUN_TERMINAL_STATUSES = frozenset(
         JobRunStatus.WARNING,
         JobRunStatus.CANCELLED,
         JobRunStatus.TIMEOUT,
+        JobRunStatus.STUCK,
     }
 )
 

@@ -66,6 +66,24 @@ class JobRun(TimestampMixin, Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set exactly once (never cleared) the moment this run is actually
+    # handed to an agent: at INSERT time for triggered_by in
+    # ("scheduler", "watch") -- see create_job_run -- or via
+    # POST /api/job-runs/{id}/claim for triggered_by="manual". NULL means
+    # "still waiting to be picked up", which is what
+    # check_stuck_pending_dispatch (app/workers/alert_worker.py) watches for.
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Cancel-lifecycle bookkeeping (see POST /api/job-runs/{id}/cancel and
+    # app/workers/alert_worker.py::check_stuck_pending_dispatch, the two
+    # writers of these columns).
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_requested_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Set once whatever initiated the cancel (agent PATCH/complete, or a
+    # human polling the run) has observably reacted to status=CANCELLED --
+    # see the auto-acknowledgment side effect in update_job_run/
+    # complete_job_run (app/routers/job_runs.py). NOT set by
+    # POST /api/job-runs/{id}/cancel itself.
+    cancel_acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)

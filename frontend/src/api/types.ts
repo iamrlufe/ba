@@ -41,6 +41,7 @@ export const JOB_RUN_TERMINAL_STATUSES: readonly JobRunStatus[] = [
   "WARNING",
   "CANCELLED",
   "TIMEOUT",
+  "STUCK",
 ];
 
 export const RESTORE_TERMINAL_STATUSES: readonly RestoreStatus[] = ["DONE", "FAILED", "CANCELLED"];

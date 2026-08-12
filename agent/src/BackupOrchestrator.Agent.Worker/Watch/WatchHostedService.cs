@@ -549,43 +549,54 @@ public sealed class WatchHostedService : BackgroundService
             _jobScheduler.MarkRunning(job.Id);
             try
             {
-                var succeeded = await _pipeline.RunAsync(
+                var outcome = await _pipeline.RunAsync(
                     job,
                     "watch",
                     _ => Task.FromResult<string?>(claimed.LocalFilePath),
                     _stoppingToken);
 
-                if (succeeded)
+                switch (outcome)
                 {
-                    _tracker.MarkTransferred(claimed);
-                    await SafeLedgerCallAsync(
-                        () => _ledger.MarkTransferredAsync(job.Id, claimed.LocalFilePath, _clock.UtcNow, CancellationToken.None),
-                        job.Id, claimed.LocalFilePath, "mark transferred");
-                }
-                else
-                {
-                    int attempts;
-                    try
-                    {
-                        attempts = await _ledger.IncrementAttemptCountAsync(job.Id, claimed.LocalFilePath, CancellationToken.None);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "WATCH could not increment attempt count for job {JobId} file {FilePath}; assuming attempt 1", job.Id, claimed.LocalFilePath);
-                        attempts = 1;
-                    }
-
-                    if (attempts < _options.MaxWatchTransferAttempts)
-                    {
-                        _tracker.OfferCandidate(claimed, out _); // re-insert; a genuinely newer arrival still wins naturally via normal comparison
-                    }
-                    else
-                    {
-                        _logger.LogError("Giving up on {FilePath} (job {JobId}) after {Attempts} failed transfer attempts", claimed.LocalFilePath, job.Id, attempts);
+                    case BackupRunOutcome.Success:
+                        _tracker.MarkTransferred(claimed);
                         await SafeLedgerCallAsync(
-                            () => _ledger.MarkFailedPermanentAsync(job.Id, claimed.LocalFilePath, CancellationToken.None),
-                            job.Id, claimed.LocalFilePath, "mark failed permanent");
-                    }
+                            () => _ledger.MarkTransferredAsync(job.Id, claimed.LocalFilePath, _clock.UtcNow, CancellationToken.None),
+                            job.Id, claimed.LocalFilePath, "mark transferred");
+                        break;
+
+                    case BackupRunOutcome.Cancelled:
+                    case BackupRunOutcome.Skipped:
+                        _logger.LogInformation(
+                            "Transfer for job {JobId} file {FilePath} was {Outcome}; re-offering without consuming a retry attempt",
+                            job.Id, claimed.LocalFilePath, outcome);
+                        _tracker.OfferCandidate(claimed, out _);
+                        break;
+
+                    case BackupRunOutcome.Failed:
+                    default:
+                        int attempts;
+                        try
+                        {
+                            attempts = await _ledger.IncrementAttemptCountAsync(job.Id, claimed.LocalFilePath, CancellationToken.None);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "WATCH could not increment attempt count for job {JobId} file {FilePath}; assuming attempt 1", job.Id, claimed.LocalFilePath);
+                            attempts = 1;
+                        }
+
+                        if (attempts < _options.MaxWatchTransferAttempts)
+                        {
+                            _tracker.OfferCandidate(claimed, out _); // re-insert; a genuinely newer arrival still wins naturally via normal comparison
+                        }
+                        else
+                        {
+                            _logger.LogError("Giving up on {FilePath} (job {JobId}) after {Attempts} failed transfer attempts", claimed.LocalFilePath, job.Id, attempts);
+                            await SafeLedgerCallAsync(
+                                () => _ledger.MarkFailedPermanentAsync(job.Id, claimed.LocalFilePath, CancellationToken.None),
+                                job.Id, claimed.LocalFilePath, "mark failed permanent");
+                        }
+                        break;
                 }
             }
             finally
@@ -596,7 +607,23 @@ public sealed class WatchHostedService : BackgroundService
         finally
         {
             _tracker.EndDispatchCycle(job.Id);
-            TryStartDispatchCycle(job); // re-check immediately for a newer candidate that arrived meanwhile
+
+            // Only restart if EndDispatchCycle revealed a genuinely held
+            // candidate that arrived during this cycle -- checked AFTER
+            // EndDispatchCycle, not before (closes a missed-wakeup race, see
+            // architect spec). If nothing is held, do nothing: the next external
+            // trigger (OnFileReadyAsync's own TryStartDispatchCycle call right
+            // after OfferCandidate, or the next ~30s reconciliation tick) picks
+            // it up on its own, exactly as it already does in the normal
+            // nothing-happening steady state. This breaks the previously
+            // unconditional restart that caused unbounded synchronous recursion
+            // (StackOverflowException) whenever a dispatch cycle completed with
+            // zero awaited suspension (unrestricted copy window + nothing
+            // claimed).
+            if (_tracker.HasHeldCandidate(job.Id))
+            {
+                TryStartDispatchCycle(job);
+            }
         }
     }
 

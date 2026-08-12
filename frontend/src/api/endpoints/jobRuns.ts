@@ -27,3 +27,7 @@ export async function getJobRunLog(token: string | null, id: number): Promise<Jo
 export async function createJobRun(token: string | null, payload: JobRunCreate): Promise<JobRunRead> {
   return apiFetch<JobRunRead>("/job-runs", { method: "POST", body: payload, token });
 }
+
+export async function cancelJobRun(token: string | null, id: number): Promise<JobRunRead> {
+  return apiFetch<JobRunRead>(`/job-runs/${id}/cancel`, { method: "POST", token });
+}

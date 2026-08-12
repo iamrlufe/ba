@@ -10,6 +10,7 @@ export const jobRunStatusVariant: Record<JobRunStatus, BadgeVariant> = {
   WARNING: "warning",
   FAILED: "destructive",
   TIMEOUT: "destructive",
+  STUCK: "destructive",
 };
 
 export const verificationRunStatusVariant: Record<VerificationRunStatus, BadgeVariant> = {

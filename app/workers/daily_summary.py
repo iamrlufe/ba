@@ -85,7 +85,11 @@ async def build_daily_summary(session: AsyncSession, *, now: datetime | None = N
         latest = latest_run_by_job.get(job.id)
         if job.id in missed_job_ids:
             status = "MISSED"
-        elif latest is not None and latest.status in (JobRunStatus.FAILED, JobRunStatus.TIMEOUT):
+        elif latest is not None and latest.status in (
+            JobRunStatus.FAILED,
+            JobRunStatus.TIMEOUT,
+            JobRunStatus.STUCK,
+        ):
             status = "FAIL"
         else:
             # Covers: latest.status in (SUCCESS, WARNING); latest.status in

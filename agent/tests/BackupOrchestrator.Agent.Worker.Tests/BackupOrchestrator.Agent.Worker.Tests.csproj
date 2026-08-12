@@ -5,6 +5,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!--
+      This sandbox only has the .NET 10 runtime installed (no net8.0 shared
+      runtime), so the net8.0-windows testhost cannot launch without
+      roll-forward. RollForward=LatestMajor lets the test host run on the
+      installed 10.0 runtime while the project still *targets*
+      net8.0-windows (compile-time API surface unchanged). Test-project-only;
+      does not affect the shipped agent's net8.0-windows target or its
+      win-x64 self-contained publish output.
+    -->
+    <RollForward>LatestMajor</RollForward>
   </PropertyGroup>
 
   <ItemGroup>

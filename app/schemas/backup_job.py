@@ -24,6 +24,7 @@ class BackupJobBase(BaseModel):
     verification_method: str | None = Field(default=None, max_length=50)
     expected_max_duration_minutes: int | None = Field(default=None, gt=0)
     missed_run_grace_minutes: int = Field(default=60, gt=0)
+    pending_to_running_grace_minutes: int = Field(default=30, gt=0)
     # Copy time-window: applies to BOTH trigger modes, deferring the actual
     # FTP transfer (not detection) until the window opens. Both hours must
     # be set or both omitted, and if set they must differ -- see
@@ -129,6 +130,7 @@ class BackupJobUpdate(BaseModel):
     verification_method: str | None = Field(default=None, max_length=50)
     expected_max_duration_minutes: int | None = Field(default=None, gt=0)
     missed_run_grace_minutes: int | None = Field(default=None, gt=0)
+    pending_to_running_grace_minutes: int | None = Field(default=None, gt=0)
     copy_window_start_hour: int | None = Field(default=None, ge=0, le=23)
     copy_window_end_hour: int | None = Field(default=None, ge=0, le=23)
     copy_window_weekend_unrestricted: bool | None = None
@@ -184,3 +186,11 @@ class BackupJobRead(BackupJobBase):
     sql_instance_port: int | None = None
     sql_instance_instance_name: str | None = None
     sql_instance_use_windows_auth: bool | None = None
+
+    # Populated ONLY by app.routers.agents.list_agent_jobs (same convention
+    # as the sql_instance_* fields above -- default None everywhere else).
+    # Lets the .NET agent's single jobs-poll response tell it, per job,
+    # whether there's a manual run waiting to be claimed or a cancellation
+    # it needs to react to, without a second round-trip.
+    pending_manual_run_id: int | None = None
+    cancel_requested_run_id: int | None = None

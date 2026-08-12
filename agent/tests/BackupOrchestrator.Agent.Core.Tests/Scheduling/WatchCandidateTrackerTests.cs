@@ -148,6 +148,62 @@ public sealed class WatchCandidateTrackerTests
         Assert.Null(second);
     }
 
+    // ------------------------------------------------------------------
+    // HasHeldCandidate: read-only peek used by WatchHostedService to decide
+    // whether ending-and-immediately-restarting a dispatch cycle is worth
+    // doing. Must never consume/remove the held candidate itself.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void HasHeldCandidate_NothingOffered_ReturnsFalse()
+    {
+        var tracker = new WatchCandidateTracker();
+
+        Assert.False(tracker.HasHeldCandidate(1));
+    }
+
+    [Fact]
+    public void HasHeldCandidate_AfterOfferCandidate_ReturnsTrue()
+    {
+        var tracker = new WatchCandidateTracker();
+        var candidate = Candidate(T, "a.bak");
+
+        tracker.OfferCandidate(candidate, out _);
+
+        Assert.True(tracker.HasHeldCandidate(candidate.BackupJobId));
+    }
+
+    [Fact]
+    public void HasHeldCandidate_AfterClaimForDispatchConsumesIt_ReturnsFalseAgain()
+    {
+        var tracker = new WatchCandidateTracker();
+        var candidate = Candidate(T, "a.bak");
+        tracker.OfferCandidate(candidate, out _);
+
+        tracker.ClaimForDispatch(candidate.BackupJobId);
+
+        Assert.False(tracker.HasHeldCandidate(candidate.BackupJobId));
+    }
+
+    [Fact]
+    public void HasHeldCandidate_DoesNotConsumeCandidate_ClaimForDispatchStillReturnsTheRealCandidateAfterPeeking()
+    {
+        var tracker = new WatchCandidateTracker();
+        var candidate = Candidate(T, "a.bak");
+        tracker.OfferCandidate(candidate, out _);
+
+        var peeked = tracker.HasHeldCandidate(candidate.BackupJobId);
+        Assert.True(peeked);
+
+        // The peek above must not have removed anything -- ClaimForDispatch
+        // must still return the actual candidate, not null.
+        var claimed = tracker.ClaimForDispatch(candidate.BackupJobId);
+        Assert.Same(candidate, claimed);
+
+        // And now that it really has been claimed, the slot is empty.
+        Assert.False(tracker.HasHeldCandidate(candidate.BackupJobId));
+    }
+
     [Fact]
     public async Task ConcurrentOfferCandidate_ForTheSameJob_DoesNotThrow_AndExactlyOneGenuinelyMostRecentCandidateIsHeld()
     {
