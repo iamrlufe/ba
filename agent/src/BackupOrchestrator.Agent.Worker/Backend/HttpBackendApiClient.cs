@@ -38,6 +38,20 @@ public sealed class HttpBackendApiClient : IBackendApiClient
     private readonly ResiliencePipeline<HttpResponseMessage> _defaultRetryPipeline;
     private readonly ResiliencePipeline<HttpResponseMessage> _connectivityOnlyRetryPipeline;
 
+    /// <summary>
+    /// Ticks (UtcNow.UtcTicks) at which the most recent request attempt was
+    /// started on THIS instance, across all endpoints. 0 = "no attempt yet".
+    /// Best-effort diagnostic proxy only -- NOT the actual idle time of the
+    /// specific pooled TCP connection reused for a given attempt (that is not
+    /// observable via HttpClient/SocketsHttpHandler's public API). Read/written
+    /// via Interlocked because BackupRunPipeline holds a single
+    /// HttpBackendApiClient instance shared across concurrently-running job
+    /// pipelines (SchedulerHostedService fires due jobs without awaiting them),
+    /// so concurrent ExecuteAsync calls on the same instance are a real,
+    /// by-design scenario here, not a hypothetical.
+    /// </summary>
+    private long _lastRequestAttemptAtTicks;
+
     public HttpBackendApiClient(HttpClient httpClient, IOptions<AgentOptions> options, ILogger<HttpBackendApiClient> logger)
     {
         _httpClient = httpClient;
@@ -46,15 +60,48 @@ public sealed class HttpBackendApiClient : IBackendApiClient
 
         _defaultRetryPipeline = RetryPolicyFactory.Create<HttpResponseMessage>(
             args => ValueTask.FromResult(ShouldRetryDefault(args.Outcome)),
-            onRetry: (attempt, delay) => _logger.LogWarning(
-                "Backend request retry {Attempt}/{MaxAttempts} after {DelaySeconds:F1}s",
-                attempt, RetryPolicyFactory.MaxAttempts, delay.TotalSeconds));
+            onRetry: (attempt, delay, outcome) => LogRetryAttempt("Backend request", attempt, delay, outcome));
 
         _connectivityOnlyRetryPipeline = RetryPolicyFactory.Create<HttpResponseMessage>(
             args => ValueTask.FromResult(args.Outcome.Exception is not null),
-            onRetry: (attempt, delay) => _logger.LogWarning(
-                "connection-config request retry {Attempt}/{MaxAttempts} after {DelaySeconds:F1}s (connectivity failure)",
-                attempt, RetryPolicyFactory.MaxAttempts, delay.TotalSeconds));
+            onRetry: (attempt, delay, outcome) => LogRetryAttempt("connection-config request", attempt, delay, outcome));
+    }
+
+    /// <summary>
+    /// Walks the exception chain (outer exception -> InnerException -> ...)
+    /// looking for a SocketException. SocketsHttpHandler surfaces connection-level
+    /// failures as HttpRequestException with InnerException set to the
+    /// SocketException; some paths (and the ExecuteAsync catch clause's own
+    /// "ex is SocketException" branch) can also surface a bare SocketException
+    /// directly. This walk covers both without assuming a fixed wrapping depth.
+    /// </summary>
+    private static SocketException? FindSocketException(Exception? exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SocketException socketException)
+            {
+                return socketException;
+            }
+        }
+
+        return null;
+    }
+
+    private void LogRetryAttempt(string context, int attempt, TimeSpan delay, Outcome<HttpResponseMessage> outcome)
+    {
+        var socketException = FindSocketException(outcome.Exception);
+
+        _logger.LogWarning(
+            "{Context} retry {Attempt}/{MaxAttempts} after {DelaySeconds:F1}s backoff; ExceptionType={ExceptionType} SocketErrorCode={SocketErrorCode} NativeErrorCode={NativeErrorCode} ResultStatusCode={ResultStatusCode}",
+            context,
+            attempt,
+            RetryPolicyFactory.MaxAttempts,
+            delay.TotalSeconds,
+            outcome.Exception?.GetType().Name,
+            socketException?.SocketErrorCode,
+            socketException?.ErrorCode,
+            outcome.Result?.StatusCode);
     }
 
     /// <summary>
@@ -83,6 +130,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "POST", uri,
             () => new HttpRequestMessage(HttpMethod.Post, uri) { Content = JsonContent.Create(request, options: AgentJsonOptions.Default) },
             cancellationToken);
 
@@ -99,6 +147,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "GET", uri,
             () => new HttpRequestMessage(HttpMethod.Get, uri),
             cancellationToken);
 
@@ -116,6 +165,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "GET", uri,
             () => new HttpRequestMessage(HttpMethod.Get, uri),
             cancellationToken);
 
@@ -148,6 +198,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
             // 404/409/403/500 are all explicitly documented, single-attempt
             // outcomes handled by the switch below (see class doc comment).
             static _ => false,
+            "GET", uri,
             () =>
             {
                 var msg = new HttpRequestMessage(HttpMethod.Get, uri);
@@ -191,6 +242,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "POST", uri,
             () => new HttpRequestMessage(HttpMethod.Post, uri) { Content = JsonContent.Create(request, options: AgentJsonOptions.Default) },
             cancellationToken);
 
@@ -216,6 +268,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "POST", uri,
             () => new HttpRequestMessage(HttpMethod.Post, uri),
             cancellationToken);
 
@@ -243,6 +296,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "PATCH", uri,
             () => new HttpRequestMessage(HttpMethod.Patch, uri) { Content = JsonContent.Create(patch, options: AgentJsonOptions.Default) },
             cancellationToken);
 
@@ -257,6 +311,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "POST", uri,
             () => new HttpRequestMessage(HttpMethod.Post, uri) { Content = JsonContent.Create(request, options: AgentJsonOptions.Default) },
             cancellationToken);
 
@@ -285,6 +340,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "POST", uri,
             () => new HttpRequestMessage(HttpMethod.Post, uri) { Content = JsonContent.Create(request, options: AgentJsonOptions.Default) },
             cancellationToken);
 
@@ -298,6 +354,7 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         using var response = await ExecuteAsync(
             _defaultRetryPipeline,
             static r => IsRetryableStatus(r.StatusCode),
+            "POST", uri,
             () => new HttpRequestMessage(HttpMethod.Post, uri) { Content = JsonContent.Create(request, options: AgentJsonOptions.Default) },
             cancellationToken);
 
@@ -335,9 +392,17 @@ public sealed class HttpBackendApiClient : IBackendApiClient
     private async Task<HttpResponseMessage> ExecuteAsync(
         ResiliencePipeline<HttpResponseMessage> pipeline,
         Func<HttpResponseMessage, bool> isUnavailableStatus,
+        string httpMethod,
+        string uri,
         Func<HttpRequestMessage> requestFactory,
         CancellationToken cancellationToken)
     {
+        var now = DateTimeOffset.UtcNow;
+        var previousAttemptTicks = Interlocked.Exchange(ref _lastRequestAttemptAtTicks, now.UtcTicks);
+        double? secondsSinceLastAttempt = previousAttemptTicks == 0
+            ? null
+            : (now - new DateTimeOffset(previousAttemptTicks, TimeSpan.Zero)).TotalSeconds;
+
         try
         {
             var response = await pipeline.ExecuteAsync(
@@ -350,6 +415,9 @@ public sealed class HttpBackendApiClient : IBackendApiClient
 
             if (isUnavailableStatus(response))
             {
+                _logger.LogWarning(
+                    "{HttpMethod} {Uri} exhausted all retry attempts with a non-success status; ResultStatusCode={ResultStatusCode} SecondsSinceLastAttempt={SecondsSinceLastAttempt}",
+                    httpMethod, uri, (int)response.StatusCode, secondsSinceLastAttempt);
                 throw new BackendUnavailableException(
                     $"Backend returned {(int)response.StatusCode} after exhausting retries");
             }
@@ -369,6 +437,15 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or SocketException)
         {
+            var socketException = FindSocketException(ex);
+            _logger.LogWarning(
+                "{HttpMethod} {Uri} exhausted all retry attempts; ExceptionType={ExceptionType} SocketErrorCode={SocketErrorCode} NativeErrorCode={NativeErrorCode} SecondsSinceLastAttempt={SecondsSinceLastAttempt}",
+                httpMethod,
+                uri,
+                ex.GetType().Name,
+                socketException?.SocketErrorCode,
+                socketException?.ErrorCode,
+                secondsSinceLastAttempt);
             throw new BackendUnavailableException("Backend unreachable after exhausting retries", ex);
         }
     }

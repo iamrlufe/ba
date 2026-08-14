@@ -95,6 +95,21 @@ builder.Services.AddHttpClient<IBackendApiClient, HttpBackendApiClient>((service
     // itself only ever appears once, at client construction, never in a log
     // statement.
     client.DefaultRequestHeaders.Add("X-Agent-Key", options.AgentKey);
+    client.Timeout = TimeSpan.FromSeconds(30);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+{
+    // Defense-in-depth only -- the known dominant failure mode (recurring
+    // SocketException 10054 on idle pooled connections) is primarily fixed
+    // server-side via uvicorn's --timeout-keep-alive 90 (handled separately).
+    // Forcing this pool to recycle connections before they'd otherwise go
+    // idle/stale reduces (but does not eliminate) the window in which a
+    // connection could be reused after the server has already closed it.
+    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+    // Defense-in-depth only, same rationale as above -- proactively retires
+    // idle-too-long pooled connections rather than relying solely on the
+    // server-side keep-alive timeout to avoid a stale-connection reuse race.
+    PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
 });
 
 // ---- Hosted services -------------------------------------------------------

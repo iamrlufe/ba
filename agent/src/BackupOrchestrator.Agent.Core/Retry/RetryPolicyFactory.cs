@@ -25,7 +25,7 @@ public static class RetryPolicyFactory
     /// </summary>
     public static ResiliencePipeline<TResult> Create<TResult>(
         Func<RetryPredicateArguments<TResult>, ValueTask<bool>> shouldRetryPredicate,
-        Action<int, TimeSpan>? onRetry = null)
+        Action<int, TimeSpan, Outcome<TResult>>? onRetry = null)
     {
         var options = new RetryStrategyOptions<TResult>
         {
@@ -37,7 +37,7 @@ public static class RetryPolicyFactory
             ShouldHandle = shouldRetryPredicate,
             OnRetry = args =>
             {
-                onRetry?.Invoke(args.AttemptNumber, args.RetryDelay);
+                onRetry?.Invoke(args.AttemptNumber, args.RetryDelay, args.Outcome);
                 return ValueTask.CompletedTask;
             },
         };

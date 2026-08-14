@@ -32,7 +32,7 @@ public sealed class RetryPolicyFactoryTests
 
         var pipeline = RetryPolicyFactory.Create<int>(
             shouldRetryPredicate: _ => ValueTask.FromResult(false),
-            onRetry: (_, _) => onRetryCallCount++);
+            onRetry: (_, _, _) => onRetryCallCount++);
 
         var result = await pipeline.ExecuteAsync(async ct =>
         {
@@ -61,6 +61,39 @@ public sealed class RetryPolicyFactoryTests
         await pipeline.ExecuteAsync(_ => ValueTask.FromResult(503));
 
         Assert.Equal(503, observedResult);
+    }
+
+    [Fact]
+    public async Task Create_OnRetry_ReceivesTheSameOutcomeThatWasEvaluatedByThePredicate()
+    {
+        // Deliberately triggers exactly ONE real retry (unavoidable ~2s
+        // jittered BaseDelay wait -- RetryPolicyFactory.Create hardcodes
+        // Delay/UseJitter with no override seam) to prove the Outcome<TResult>
+        // forwarded to onRetry is the SAME outcome the predicate matched on,
+        // not just that the callback signature compiles/is invoked.
+        var capturedResults = new List<int?>();
+        var capturedExceptions = new List<Exception?>();
+        var attempts = 0;
+
+        var pipeline = RetryPolicyFactory.Create<int>(
+            shouldRetryPredicate: args => ValueTask.FromResult(args.Outcome.Result == 503),
+            onRetry: (_, _, outcome) =>
+            {
+                capturedResults.Add(outcome.Result);
+                capturedExceptions.Add(outcome.Exception);
+            });
+
+        var result = await pipeline.ExecuteAsync(ct =>
+        {
+            attempts++;
+            return ValueTask.FromResult(attempts == 1 ? 503 : 200);
+        });
+
+        Assert.Equal(200, result);
+        Assert.Equal(2, attempts);
+        Assert.Single(capturedResults);
+        Assert.Equal(503, capturedResults[0]);
+        Assert.Null(capturedExceptions[0]);
     }
 
     [Fact]
