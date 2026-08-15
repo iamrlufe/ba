@@ -7,7 +7,14 @@ disk's server_id doesn't match the payload's server_id.
 from __future__ import annotations
 
 from app.core.config import settings
-from app.models.enums import AlertStatus, AlertType, JobRunStatus, TriggerMode, VerificationRunStatus
+from app.models.enums import (
+    AlertStatus,
+    AlertType,
+    BackupType,
+    JobRunStatus,
+    TriggerMode,
+    VerificationRunStatus,
+)
 from app.routers import backup_jobs as backup_jobs_module
 from app.workers.backup_verification import create_pending_verification_run
 from tests.conftest import (
@@ -915,3 +922,146 @@ async def test_patch_unrelated_field_does_not_resolve_active_cron_invalid_alert(
         if a["backup_job_id"] == job.id and a["alert_type"] == AlertType.JOB_CRON_INVALID.value
     ]
     assert [a["id"] for a in matching] == [alert_id]
+
+
+# ---------------------------------------------------------------------------
+# remote_directory (BackupJobRead, backed by BackupJob.remote_directory
+# hybrid_property / app.core.remote_paths.resolve_remote_directory) --
+# resolved via eager-loaded `server` on create/get/list/update. See
+# tests/test_remote_paths.py for the pure-function resolution logic itself
+# and tests/test_models.py for the hybrid_property's unloaded-guard.
+# ---------------------------------------------------------------------------
+
+
+def _expected_default_remote_directory(server_name: str, job_name: str, job_id: int, backup_type: str) -> str:
+    from app.core.remote_paths import resolve_remote_directory
+
+    return resolve_remote_directory(server_name, job_name, job_id, BackupType(backup_type), None)
+
+
+async def test_create_backup_job_response_has_computed_remote_directory(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    resp = await admin_client.post(
+        "/api/backup-jobs",
+        json=_job_payload(server.id, disk.id, name="Nightly AdventureWorks Diff", backup_type="DIFFERENTIAL"),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["remote_directory"] == _expected_default_remote_directory(
+        server.name, "Nightly AdventureWorks Diff", body["id"], "DIFFERENTIAL"
+    )
+
+
+async def test_create_backup_job_response_with_override_returns_override_literally(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    resp = await admin_client.post(
+        "/api/backup-jobs",
+        json=_job_payload(server.id, disk.id, remote_directory_override="hand/picked/path"),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["remote_directory"] == "hand/picked/path"
+
+
+async def test_get_backup_job_response_has_computed_remote_directory(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id, backup_type="FULL")
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/backup-jobs/{job.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["remote_directory"] == _expected_default_remote_directory(
+        server.name, job.name, job.id, "FULL"
+    )
+
+
+async def test_list_backup_jobs_response_has_correct_remote_directory_per_job(admin_client, session):
+    """Multiple jobs across different servers/backup_types, one with an
+    override -- each item's remote_directory must be independently correct
+    (no cross-item bleed, no N+1-triggered MissingGreenlet)."""
+    server_a, disk_a = await _server_and_disk(session)
+    server_b, disk_b = await _server_and_disk(session)
+
+    job_full = build_backup_job(server_a.id, disk_a.id, backup_type="FULL")
+    job_tlog = build_backup_job(server_b.id, disk_b.id, backup_type="TRANSACTION_LOG")
+    job_override = build_backup_job(
+        server_a.id, disk_a.id, remote_directory_override="operator/chosen/path"
+    )
+    session.add_all([job_full, job_tlog, job_override])
+    await session.commit()
+
+    resp = await admin_client.get("/api/backup-jobs", params={"limit": 200})
+    assert resp.status_code == 200
+    by_id = {item["id"]: item for item in resp.json()["items"]}
+
+    assert by_id[job_full.id]["remote_directory"] == _expected_default_remote_directory(
+        server_a.name, job_full.name, job_full.id, "FULL"
+    )
+    assert by_id[job_tlog.id]["remote_directory"] == _expected_default_remote_directory(
+        server_b.name, job_tlog.name, job_tlog.id, "TRANSACTION_LOG"
+    )
+    assert by_id[job_override.id]["remote_directory"] == "operator/chosen/path"
+
+
+async def test_patch_backup_job_setting_override_changes_remote_directory(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.patch(
+        f"/api/backup-jobs/{job.id}", json={"remote_directory_override": "new/literal/path"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["remote_directory"] == "new/literal/path"
+
+
+async def test_patch_backup_job_rename_recomputes_remote_directory(admin_client, session):
+    """Renaming a job (no override set) must change the resolved
+    remote_directory to reflect the new name -- it is never denormalized/
+    persisted, so this is purely a resolution-time behavior."""
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id, name="original-name", backup_type="FULL")
+    session.add(job)
+    await session.commit()
+
+    before = await admin_client.get(f"/api/backup-jobs/{job.id}")
+    assert before.json()["remote_directory"] == _expected_default_remote_directory(
+        server.name, "original-name", job.id, "FULL"
+    )
+
+    resp = await admin_client.patch(f"/api/backup-jobs/{job.id}", json={"name": "renamed-job"})
+    assert resp.status_code == 200
+    assert resp.json()["remote_directory"] == _expected_default_remote_directory(
+        server.name, "renamed-job", job.id, "FULL"
+    )
+
+
+async def test_patch_backup_job_backup_type_change_recomputes_remote_directory(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id, backup_type="FULL")
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.patch(f"/api/backup-jobs/{job.id}", json={"backup_type": "DIFFERENTIAL"})
+    assert resp.status_code == 200
+    assert resp.json()["remote_directory"] == _expected_default_remote_directory(
+        server.name, job.name, job.id, "DIFFERENTIAL"
+    )
+
+
+async def test_patch_backup_job_clearing_override_reverts_to_computed_default(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id, remote_directory_override="operator/chosen/path")
+    session.add(job)
+    await session.commit()
+
+    before = await admin_client.get(f"/api/backup-jobs/{job.id}")
+    assert before.json()["remote_directory"] == "operator/chosen/path"
+
+    resp = await admin_client.patch(f"/api/backup-jobs/{job.id}", json={"remote_directory_override": None})
+    assert resp.status_code == 200
+    assert resp.json()["remote_directory"] == _expected_default_remote_directory(
+        server.name, job.name, job.id, job.backup_type.value
+    )

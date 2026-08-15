@@ -2,12 +2,9 @@ namespace BackupOrchestrator.Agent.Core.Models;
 
 /// <summary>
 /// Mirrors app/schemas/backup_job.py::BackupJobRead field-for-field (snake_case
-/// wire names, mapped via JsonPropertyName in the Worker's JSON options -- see
-/// HttpBackendApiClient). Returned from GET /api/agents/{server_id}/jobs.
-///
-/// There is deliberately NO destination/remote-path field here -- the backend
-/// BackupJob model has none. The agent decides the remote path itself; see
-/// RemotePathBuilder.
+/// wire names, matched automatically by JsonNamingPolicy.SnakeCaseLower in
+/// AgentJsonOptions.Default -- no per-property JsonPropertyName needed).
+/// Returned from GET /api/agents/{server_id}/jobs.
 /// </summary>
 public sealed class BackupJobDto
 {
@@ -21,6 +18,19 @@ public sealed class BackupJobDto
 
     /// <summary>Required iff TriggerMode == "SCHEDULE"; null for WATCH.</summary>
     public string? SourcePath { get; init; }
+
+    /// <summary>
+    /// Абсолютная remote-директория, полностью резолвленная backend'ом
+    /// (override remote_directory_override, либо вычисленный дефолт по
+    /// server.name+name+id+backup_type) -- см. app/models/backup_job.py::
+    /// BackupJob.remote_directory (hybrid_property) / app/schemas/
+    /// backup_job.py::BackupJobRead.remote_directory. Агент больше не имеет
+    /// собственного мнения о структуре директории -- см.
+    /// RemotePathBuilder.NormalizeRemoteDirectory для единственной вещи,
+    /// которую агент всё ещё делает с этим значением (нормализация слэшей
+    /// для WinSCP path-семантики, не бизнес-решение).
+    /// </summary>
+    public required string RemoteDirectory { get; init; }
 
     public required string BackupType { get; init; }
 

@@ -5,15 +5,55 @@ namespace BackupOrchestrator.Agent.Core.Tests.Scheduling;
 public sealed class RemotePathBuilderTests
 {
     [Fact]
-    public void BuildRemoteDirectory_KnownIds_ProducesConventionalPath()
+    public void NormalizeRemoteDirectory_AlreadyHasBothSlashes_Unchanged()
     {
-        var result = RemotePathBuilder.BuildRemoteDirectory(serverId: 7, backupJobId: 42);
+        var result = RemotePathBuilder.NormalizeRemoteDirectory("/srv1/job-name-1/");
 
-        Assert.Equal("/7/42/", result);
+        Assert.Equal("/srv1/job-name-1/", result);
     }
 
     [Fact]
-    public void BuildRemoteFileName_WindowsStylePath_UsesTimestampPrefixAndOriginalFileName()
+    public void NormalizeRemoteDirectory_MissingLeadingSlash_AddsIt()
+    {
+        var result = RemotePathBuilder.NormalizeRemoteDirectory("srv1/job-name-1/");
+
+        Assert.Equal("/srv1/job-name-1/", result);
+    }
+
+    [Fact]
+    public void NormalizeRemoteDirectory_MissingTrailingSlash_AddsIt()
+    {
+        var result = RemotePathBuilder.NormalizeRemoteDirectory("/srv1/job-name-1");
+
+        Assert.Equal("/srv1/job-name-1/", result);
+    }
+
+    [Fact]
+    public void NormalizeRemoteDirectory_MissingBothSlashes_AddsBoth()
+    {
+        var result = RemotePathBuilder.NormalizeRemoteDirectory("srv1/job-name-1");
+
+        Assert.Equal("/srv1/job-name-1/", result);
+    }
+
+    [Fact]
+    public void NormalizeRemoteDirectory_SurroundingWhitespace_TrimmedBeforeNormalizing()
+    {
+        var result = RemotePathBuilder.NormalizeRemoteDirectory("  srv1/job-name-1  ");
+
+        Assert.Equal("/srv1/job-name-1/", result);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void NormalizeRemoteDirectory_EmptyOrWhitespaceOnly_ThrowsArgumentException(string input)
+    {
+        Assert.Throws<ArgumentException>(() => RemotePathBuilder.NormalizeRemoteDirectory(input));
+    }
+
+    [Fact]
+    public void BuildRemoteFileName_WindowsStylePath_UsesOriginalFileNameVerbatim()
     {
         // RemotePathBuilder delegates to Path.GetFileName, which is
         // platform-dependent: only Windows treats '\' as a path separator
@@ -23,42 +63,36 @@ public sealed class RemotePathBuilderTests
         // Windows-separator behavior when run on Windows, and documents the
         // (correct, and still deterministic) pass-through behavior observed
         // when this same cross-platform test suite runs on non-Windows CI.
-        var start = new DateTimeOffset(2026, 8, 11, 3, 4, 5, TimeSpan.Zero);
-
-        var result = RemotePathBuilder.BuildRemoteFileName(@"C:\backups\database.bak", start);
+        var result = RemotePathBuilder.BuildRemoteFileName(@"C:\backups\database.bak");
 
         if (OperatingSystem.IsWindows())
         {
-            Assert.Equal("20260811_030405_database.bak", result);
+            Assert.Equal("database.bak", result);
         }
         else
         {
-            Assert.Equal(@"20260811_030405_C:\backups\database.bak", result);
+            Assert.Equal(@"C:\backups\database.bak", result);
         }
     }
 
     [Fact]
     public void BuildRemoteFileName_ForwardSlashPath_ExtractsFileNameCorrectly()
     {
-        var start = new DateTimeOffset(2026, 1, 2, 13, 0, 0, TimeSpan.Zero);
+        var result = RemotePathBuilder.BuildRemoteFileName("/var/backups/dump.sql");
 
-        var result = RemotePathBuilder.BuildRemoteFileName("/var/backups/dump.sql", start);
-
-        Assert.Equal("20260102_130000_dump.sql", result);
+        Assert.Equal("dump.sql", result);
     }
 
     [Fact]
     public void BuildRemoteFileName_TrailingSlashDirectoryOnlyPath_FallsBackToBackupPlaceholder()
     {
-        var start = new DateTimeOffset(2026, 1, 2, 13, 0, 0, TimeSpan.Zero);
-
         // "/" (rather than a Windows-style "C:\backups\") is used here so the
         // fallback is exercised deterministically on every platform this
         // suite runs on: TrimEnd('/', '\\') strips it to "", and
         // Path.GetFileName("") is "" on every OS, triggering the fallback.
-        var result = RemotePathBuilder.BuildRemoteFileName("/", start);
+        var result = RemotePathBuilder.BuildRemoteFileName("/");
 
-        Assert.Equal("20260102_130000_backup", result);
+        Assert.Equal("backup", result);
     }
 
     [Fact]
@@ -71,33 +105,17 @@ public sealed class RemotePathBuilderTests
             return;
         }
 
-        var start = new DateTimeOffset(2026, 1, 2, 13, 0, 0, TimeSpan.Zero);
+        var result = RemotePathBuilder.BuildRemoteFileName(@"C:\backups\");
 
-        var result = RemotePathBuilder.BuildRemoteFileName(@"C:\backups\", start);
-
-        Assert.Equal("20260102_130000_backup", result);
+        Assert.Equal("backup", result);
     }
 
     [Fact]
     public void BuildRemoteFileName_EmptyPath_FallsBackToBackupPlaceholder()
     {
-        var start = new DateTimeOffset(2026, 1, 2, 13, 0, 0, TimeSpan.Zero);
+        var result = RemotePathBuilder.BuildRemoteFileName(string.Empty);
 
-        var result = RemotePathBuilder.BuildRemoteFileName(string.Empty, start);
-
-        Assert.Equal("20260102_130000_backup", result);
-    }
-
-    [Fact]
-    public void BuildRemoteFileName_TimestampIsSortableAndUsesGivenInstantVerbatim()
-    {
-        // Verifies the agent does not silently convert to local time -- the
-        // caller is responsible for passing a UTC transfer-start instant.
-        var start = new DateTimeOffset(2026, 12, 31, 23, 59, 59, TimeSpan.Zero);
-
-        var result = RemotePathBuilder.BuildRemoteFileName("file.bak", start);
-
-        Assert.Equal("20261231_235959_file.bak", result);
+        Assert.Equal("backup", result);
     }
 
     [Theory]

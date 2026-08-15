@@ -132,6 +132,15 @@ class BackupJob(TimestampMixin, Base):
     # is only ever noted in VerificationRun.verifyonly_output -- never
     # affects status/severity/alerting.
     local_backup_path_pattern: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Escape hatch for the computed remote FTP/SFTP directory (see
+    # `remote_directory` hybrid_property below). When NULL (the common
+    # case), the effective directory is computed on every read by
+    # app.core.remote_paths.resolve_remote_directory from server.name +
+    # name + id + backup_type -- it is NEVER denormalized/persisted here,
+    # so renaming a server or job automatically changes where future
+    # transfers land without a migration/backfill. Only set this when an
+    # operator needs a literal, hand-picked remote path instead.
+    remote_directory_override: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     server: Mapped["Server"] = relationship("Server", back_populates="backup_jobs")
     disk: Mapped["Disk"] = relationship("Disk", back_populates="backup_jobs")
@@ -184,6 +193,38 @@ class BackupJob(TimestampMixin, Base):
         if "sql_instance" in inspect(self).unloaded:
             return None
         return self.sql_instance.use_windows_auth if self.sql_instance is not None else None
+
+    @hybrid_property
+    def remote_directory(self) -> str | None:
+        """Resolved remote directory: the literal `remote_directory_override`
+        if set, else computed from server.name + name + id + backup_type via
+        app.core.remote_paths.resolve_remote_directory. Never persisted.
+
+        Unlike sql_instance_host and the other hybrid_properties above that
+        share the same unloaded-guard pattern, `server` is NOT an optional
+        relationship here -- backup_jobs.server_id is NOT NULL, every
+        BackupJob has exactly one Server. So returning None below means the
+        caller forgot to eager-load `server` before building a
+        BackupJobRead/accessing this property, not a legitimate "no data"
+        state -- callers must eager-load `server` (e.g. via selectinload)
+        to get a real value here.
+        """
+        if "server" in inspect(self).unloaded:
+            return None
+        # Imported lazily (not at module top-level) to avoid a circular
+        # import: app.core.remote_paths imports app.models.enums, and
+        # importing any app.models.enums submodule directly first would
+        # otherwise trigger app.models/__init__.py to import this very
+        # module (BackupJob) before app.core.remote_paths has finished
+        # initializing. Deferring the import to call time (well after
+        # startup, when both modules are already fully loaded) sidesteps
+        # the cycle entirely.
+        from app.core.remote_paths import resolve_remote_directory
+
+        return resolve_remote_directory(
+            self.server.name, self.name, self.id, self.backup_type, self.remote_directory_override
+        )
+
     runs: Mapped[list["JobRun"]] = relationship(
         "JobRun", back_populates="backup_job", cascade="all, delete-orphan"
     )

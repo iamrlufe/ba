@@ -39,6 +39,13 @@ class BackupJobBase(BaseModel):
     # below). See app/models/backup_job.py column comment /
     # app/workers/backup_verification.py for how a mismatch is surfaced.
     local_backup_path_pattern: str | None = Field(default=None, max_length=500)
+    # When None (the common case), the effective remote FTP/SFTP directory
+    # is computed by app.core.remote_paths.resolve_remote_directory from
+    # server.name + name + id + backup_type -- see
+    # app.models.backup_job.BackupJob.remote_directory. Setting this
+    # overrides that computed value with a literal path. See
+    # _check_remote_directory_override below for validation rules.
+    remote_directory_override: str | None = Field(default=None, max_length=500)
 
 
 class BackupJobCreate(BackupJobBase):
@@ -95,6 +102,11 @@ class BackupJobCreate(BackupJobBase):
         return self
 
     @model_validator(mode="after")
+    def _remote_directory_override_valid(self) -> "BackupJobCreate":
+        _check_remote_directory_override(self.remote_directory_override)
+        return self
+
+    @model_validator(mode="after")
     def _watch_backup_type_rejected(self) -> "BackupJobCreate":
         if self.trigger_mode == TriggerMode.WATCH and self.backup_type in (
             BackupType.TRANSACTION_LOG,
@@ -146,6 +158,20 @@ def _check_copy_window(start_hour: int | None, end_hour: int | None) -> None:
         )
 
 
+def _check_remote_directory_override(value: str | None) -> None:
+    if value is None:
+        return
+    if value == "":
+        raise ValueError(
+            "remote_directory_override must not be an empty string -- omit the field "
+            "entirely to use the computed default"
+        )
+    if value != value.strip():
+        raise ValueError("remote_directory_override must not have leading/trailing whitespace")
+    if any(segment == ".." for segment in value.replace("\\", "/").split("/")):
+        raise ValueError("remote_directory_override must not contain '..' path-traversal segments")
+
+
 class BackupJobUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -167,6 +193,9 @@ class BackupJobUpdate(BaseModel):
     copy_window_end_hour: int | None = Field(default=None, ge=0, le=23)
     copy_window_weekend_unrestricted: bool | None = None
     local_backup_path_pattern: str | None = Field(default=None, max_length=500)
+    # Same "exclude_unset applies changes, explicit null clears the
+    # override" convention as sql_instance_id below -- see its comment.
+    remote_directory_override: str | None = Field(default=None, max_length=500)
     is_enabled: bool | None = None
 
     # sql_instance_id follows the "exclude_unset" pattern: if the key is
@@ -203,6 +232,14 @@ class BackupJobUpdate(BaseModel):
         _check_cron_syntax(self.schedule_cron)
         return self
 
+    @model_validator(mode="after")
+    def _remote_directory_override_valid(self) -> "BackupJobUpdate":
+        # Self-contained, same as _copy_window_valid/_cron_syntax_valid
+        # above -- if remote_directory_override isn't in this patch at all,
+        # self.remote_directory_override is None and the check is a no-op.
+        _check_remote_directory_override(self.remote_directory_override)
+        return self
+
 
 class BackupJobRead(BackupJobBase):
     id: int
@@ -236,6 +273,16 @@ class BackupJobRead(BackupJobBase):
     # it needs to react to, without a second round-trip.
     pending_manual_run_id: int | None = None
     cancel_requested_run_id: int | None = None
+
+    # Backed by the `remote_directory` hybrid_property on the ORM model
+    # (app/models/backup_job.py) -- actually resolves a real value only when
+    # `server` has been eager-loaded on the source BackupJob (see
+    # list_backup_jobs/get_backup_job/create_backup_job/update_backup_job/
+    # list_agent_jobs, all of which now eager-load or refresh it). None here
+    # is just this schema's own default for construction paths that don't
+    # go through a real ORM object (e.g. tests building BackupJobRead
+    # directly), not a claim that the directory is unset.
+    remote_directory: str | None = None
 
 
 class ScheduleErrorRequest(BaseModel):

@@ -32,6 +32,10 @@ The first time you're asked to design any of these, produce a dedicated spec sec
 - **WebSocket reconnect hook**: design a single reusable hook (e.g. `useJobRunSocket`) covering connect, exponential-backoff reconnect on drop, cleanup on unmount, and how it surfaces connection state (connecting/open/closed/error) to the consuming page — don't let each page that needs a socket reinvent this.
 - **Role-based UI gating**: a single shared helper/hook (e.g. `useCurrentUser()` exposing `role`) that pages/components call to decide what to render — reiterate in every relevant spec section that this is a UX convenience only, the backend enforces authorization on every request regardless, so a gating bug here is a UX bug, not a security hole, but should still be flagged if you find inconsistent usage.
 
+## Standing rule: UI copy is Russian
+
+The interface's user-facing language is Russian. Whenever your spec proposes concrete UI copy (button labels, field labels, placeholders, empty-state text, error/validation messages, tooltips), write that copy in Russian directly in the spec — don't hand frontend-coder English placeholder strings for it to translate later. This mirrors the standing rule in `.claude/agents/frontend-coder.md` requiring opportunistic Russian translation of any user-facing string in a `.tsx`/`.ts` file being edited for any reason. Internal/technical identifiers you specify (type names, prop names, query keys, route paths) stay in English as normal — only actual rendered UI text is Russian.
+
 ## How you work
 
 - Before designing, use Read/Grep/Glob on the backend: `app/routers/`, `app/schemas/`, `app/models/enums.py` for the exact endpoint paths, request/response shapes, and enum values you're building UI around. Do not invent field names or endpoint paths — verify them against the real backend code (or a live `/openapi.json` if you start the server).

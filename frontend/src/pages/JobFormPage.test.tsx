@@ -60,10 +60,28 @@ async function chooseOption(user: ReturnType<typeof userEvent.setup>, labelText:
 
 /** Fills in name + server + disk -- the fields required for any submission in create mode. */
 async function fillCoreRequiredFields(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText("Name"), "my-job");
-  await chooseOption(user, "Server", "prod-sql-01");
+  await user.type(screen.getByLabelText("Название"), "my-job");
+  await chooseOption(user, "Сервер", "prod-sql-01");
   await waitFor(() => expect(listDisks).toHaveBeenCalled());
-  await chooseOption(user, "Disk", "C-drive (C:\\backups)");
+  await chooseOption(user, "Диск", "C-drive (C:\\backups)");
+}
+
+/**
+ * Finds an element whose own textContent (but none of its direct children's
+ * textContent) matches `regex` -- for asserting on JSX text that is broken up
+ * across sibling text nodes and inline elements (e.g. a label followed by a
+ * `<span className="font-mono">`), which plain `getByText(string)` can't
+ * match since it only matches nodes that are themselves a single contiguous
+ * text node.
+ */
+function getByTextAcrossNodes(regex: RegExp) {
+  return screen.getByText((_content, element) => {
+    if (!element) return false;
+    const hasText = (el: Element) => regex.test(el.textContent ?? "");
+    const elementHasText = hasText(element);
+    const childrenDontHaveText = Array.from(element.children).every((child) => !hasText(child));
+    return elementHasText && childrenDontHaveText;
+  });
 }
 
 beforeEach(() => {
@@ -79,9 +97,9 @@ describe("JobFormPage -- create mode, trigger_mode conditional rendering", () =>
 
     await waitFor(() => expect(listServers).toHaveBeenCalled());
 
-    expect(screen.getByLabelText("Source path (remote)")).toBeInTheDocument();
-    expect(screen.getByLabelText("Schedule (cron)")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Watch directory (remote)")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Путь источника (удалённый)")).toBeInTheDocument();
+    expect(screen.getByLabelText("Расписание (cron)")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Директория наблюдения (удалённая)")).not.toBeInTheDocument();
   });
 
   it("switching to WATCH hides source_path/schedule_cron and shows watch_directory", async () => {
@@ -89,11 +107,11 @@ describe("JobFormPage -- create mode, trigger_mode conditional rendering", () =>
     renderWithProviders(<JobFormPage mode="create" />, { route: "/jobs/new" });
 
     await waitFor(() => expect(listServers).toHaveBeenCalled());
-    await chooseOption(user, "Trigger mode", "Watch directory");
+    await chooseOption(user, "Способ запуска", "Наблюдение за директорией");
 
-    expect(screen.queryByLabelText("Source path (remote)")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Schedule (cron)")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Watch directory (remote)")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Путь источника (удалённый)")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Расписание (cron)")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Директория наблюдения (удалённая)")).toBeInTheDocument();
   });
 });
 
@@ -105,14 +123,14 @@ describe("JobFormPage -- create mode, WATCH + TRANSACTION_LOG/CUSTOM rejected", 
     await waitFor(() => expect(listServers).toHaveBeenCalled());
     await fillCoreRequiredFields(user);
 
-    await chooseOption(user, "Trigger mode", "Watch directory");
-    await user.type(screen.getByLabelText("Watch directory (remote)"), "/watched/incoming");
-    await chooseOption(user, "Backup type", "TRANSACTION_LOG");
+    await chooseOption(user, "Способ запуска", "Наблюдение за директорией");
+    await user.type(screen.getByLabelText("Директория наблюдения (удалённая)"), "/watched/incoming");
+    await chooseOption(user, "Тип бэкапа", "TRANSACTION_LOG");
 
-    await user.click(screen.getByRole("button", { name: "Create job" }));
+    await user.click(screen.getByRole("button", { name: "Создать задачу" }));
 
     expect(
-      await screen.findByText(/Watch-mode jobs don't support Transaction Log or Custom backup types/),
+      await screen.findByText(/Задачи в режиме наблюдения не поддерживают типы бэкапа Transaction Log или Custom/),
     ).toBeInTheDocument();
     expect(createBackupJob).not.toHaveBeenCalled();
   });
@@ -135,13 +153,13 @@ describe("JobFormPage -- edit mode, trigger_mode switch submits coherent field s
     const user = userEvent.setup();
     renderWithProviders(<JobFormPage mode="edit" />, { route: "/jobs/5", path: "/jobs/:id" });
 
-    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(job.name));
-    await waitFor(() => expect(screen.getByLabelText("Source path (remote)")).toHaveValue(job.source_path));
+    await waitFor(() => expect(screen.getByLabelText("Название")).toHaveValue(job.name));
+    await waitFor(() => expect(screen.getByLabelText("Путь источника (удалённый)")).toHaveValue(job.source_path));
 
-    await chooseOption(user, "Trigger mode", "Watch directory");
-    await user.type(screen.getByLabelText("Watch directory (remote)"), "/watched/incoming");
+    await chooseOption(user, "Способ запуска", "Наблюдение за директорией");
+    await user.type(screen.getByLabelText("Директория наблюдения (удалённая)"), "/watched/incoming");
 
-    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await user.click(screen.getByRole("button", { name: "Сохранить изменения" }));
 
     await waitFor(() => expect(updateBackupJob).toHaveBeenCalled());
     const [, , patch] = vi.mocked(updateBackupJob).mock.calls[0];
@@ -171,14 +189,14 @@ describe("JobFormPage -- edit mode, trigger_mode switch submits coherent field s
     const user = userEvent.setup();
     renderWithProviders(<JobFormPage mode="edit" />, { route: "/jobs/6", path: "/jobs/:id" });
 
-    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(job.name));
-    await waitFor(() => expect(screen.getByLabelText("Watch directory (remote)")).toHaveValue(job.watch_directory));
+    await waitFor(() => expect(screen.getByLabelText("Название")).toHaveValue(job.name));
+    await waitFor(() => expect(screen.getByLabelText("Директория наблюдения (удалённая)")).toHaveValue(job.watch_directory));
 
-    await chooseOption(user, "Trigger mode", "Schedule (cron)");
-    await user.type(screen.getByLabelText("Source path (remote)"), "/remote/new-path");
-    await user.type(screen.getByLabelText("Schedule (cron)"), "0 3 * * *");
+    await chooseOption(user, "Способ запуска", "Расписание (cron)");
+    await user.type(screen.getByLabelText("Путь источника (удалённый)"), "/remote/new-path");
+    await user.type(screen.getByLabelText("Расписание (cron)"), "0 3 * * *");
 
-    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await user.click(screen.getByRole("button", { name: "Сохранить изменения" }));
 
     await waitFor(() => expect(updateBackupJob).toHaveBeenCalled());
     const [, , patch] = vi.mocked(updateBackupJob).mock.calls[0];
@@ -196,8 +214,8 @@ describe("JobFormPage -- edit mode, trigger_mode switch submits coherent field s
 describe("JobFormPage -- copy-window validation", () => {
   async function fillScheduleModeCore(user: ReturnType<typeof userEvent.setup>) {
     await fillCoreRequiredFields(user);
-    await user.type(screen.getByLabelText("Source path (remote)"), "/remote/backups");
-    await user.type(screen.getByLabelText("Schedule (cron)"), "0 2 * * *");
+    await user.type(screen.getByLabelText("Путь источника (удалённый)"), "/remote/backups");
+    await user.type(screen.getByLabelText("Расписание (cron)"), "0 2 * * *");
   }
 
   it("only start hour set (end empty) shows a validation error and blocks submission", async () => {
@@ -207,10 +225,10 @@ describe("JobFormPage -- copy-window validation", () => {
     await waitFor(() => expect(listServers).toHaveBeenCalled());
     await fillScheduleModeCore(user);
 
-    await user.type(screen.getByLabelText("Copy window start (hour, 0-23)"), "10");
-    await user.click(screen.getByRole("button", { name: "Create job" }));
+    await user.type(screen.getByLabelText("Начало окна копирования (час, 0-23)"), "10");
+    await user.click(screen.getByRole("button", { name: "Создать задачу" }));
 
-    expect(await screen.findByText(/Set both start and end hour, or leave both empty/)).toBeInTheDocument();
+    expect(await screen.findByText(/Укажите оба часа — начало и конец — или оставьте оба поля пустыми/)).toBeInTheDocument();
     expect(createBackupJob).not.toHaveBeenCalled();
   });
 
@@ -221,12 +239,12 @@ describe("JobFormPage -- copy-window validation", () => {
     await waitFor(() => expect(listServers).toHaveBeenCalled());
     await fillScheduleModeCore(user);
 
-    await user.type(screen.getByLabelText("Copy window start (hour, 0-23)"), "5");
-    await user.type(screen.getByLabelText("Copy window end (hour, 0-23)"), "5");
-    await user.click(screen.getByRole("button", { name: "Create job" }));
+    await user.type(screen.getByLabelText("Начало окна копирования (час, 0-23)"), "5");
+    await user.type(screen.getByLabelText("Конец окна копирования (час, 0-23)"), "5");
+    await user.click(screen.getByRole("button", { name: "Создать задачу" }));
 
     expect(
-      await screen.findByText(/Start and end hour must differ/),
+      await screen.findByText(/Часы начала и конца должны отличаться/),
     ).toBeInTheDocument();
     expect(createBackupJob).not.toHaveBeenCalled();
   });
@@ -239,10 +257,161 @@ describe("JobFormPage -- copy-window validation", () => {
     await waitFor(() => expect(listServers).toHaveBeenCalled());
     await fillScheduleModeCore(user);
 
-    await user.type(screen.getByLabelText("Copy window start (hour, 0-23)"), "18");
-    await user.type(screen.getByLabelText("Copy window end (hour, 0-23)"), "9");
-    await user.click(screen.getByRole("button", { name: "Create job" }));
+    await user.type(screen.getByLabelText("Начало окна копирования (час, 0-23)"), "18");
+    await user.type(screen.getByLabelText("Конец окна копирования (час, 0-23)"), "9");
+    await user.click(screen.getByRole("button", { name: "Создать задачу" }));
 
     await waitFor(() => expect(createBackupJob).toHaveBeenCalled());
+  });
+});
+
+describe("JobFormPage -- remote_directory_override, create mode payload", () => {
+  async function fillScheduleModeCore(user: ReturnType<typeof userEvent.setup>) {
+    await fillCoreRequiredFields(user);
+    await user.type(screen.getByLabelText("Путь источника (удалённый)"), "/remote/backups");
+    await user.type(screen.getByLabelText("Расписание (cron)"), "0 2 * * *");
+  }
+
+  it("submits the entered FTP override string in the create payload", async () => {
+    vi.mocked(createBackupJob).mockResolvedValue(makeBackupJob({ id: 99 }));
+    const user = userEvent.setup();
+    renderWithProviders(<JobFormPage mode="create" />, { route: "/jobs/new" });
+
+    await waitFor(() => expect(listServers).toHaveBeenCalled());
+    await fillScheduleModeCore(user);
+    await user.type(
+      screen.getByLabelText("Директория на FTP-назначении (переопределение)"),
+      "Taraz/tTaraz/DIFF/",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Создать задачу" }));
+
+    await waitFor(() => expect(createBackupJob).toHaveBeenCalled());
+    const [, payload] = vi.mocked(createBackupJob).mock.calls[0];
+    expect(payload).toHaveProperty("remote_directory_override", "Taraz/tTaraz/DIFF/");
+  });
+
+  it("leaving the FTP override field empty sends null, not an empty string or a missing key", async () => {
+    vi.mocked(createBackupJob).mockResolvedValue(makeBackupJob({ id: 100 }));
+    const user = userEvent.setup();
+    renderWithProviders(<JobFormPage mode="create" />, { route: "/jobs/new" });
+
+    await waitFor(() => expect(listServers).toHaveBeenCalled());
+    await fillScheduleModeCore(user);
+
+    await user.click(screen.getByRole("button", { name: "Создать задачу" }));
+
+    await waitFor(() => expect(createBackupJob).toHaveBeenCalled());
+    const [, payload] = vi.mocked(createBackupJob).mock.calls[0];
+    expect(payload).toHaveProperty("remote_directory_override", null);
+  });
+});
+
+describe("JobFormPage -- remote_directory_override live preview (edit mode)", () => {
+  function editJob(overrides: Parameters<typeof makeBackupJob>[0] = {}) {
+    return makeBackupJob({
+      id: 8,
+      server_id: 7,
+      disk_id: 1,
+      remote_directory: "trz1c8.rcku.net/Nightly_42/DIFF/",
+      remote_directory_override: null,
+      ...overrides,
+    });
+  }
+
+  it("shows the server-resolved directory with the 'computed at page load' caption before any edit", async () => {
+    const job = editJob();
+    vi.mocked(getBackupJob).mockResolvedValue(job);
+
+    renderWithProviders(<JobFormPage mode="edit" />, { route: "/jobs/8", path: "/jobs/:id" });
+
+    await waitFor(() => expect(screen.getByLabelText("Название")).toHaveValue(job.name));
+
+    expect(screen.getByText(job.remote_directory!)).toBeInTheDocument();
+    expect(getByTextAcrossNodes(/Текущая директория на сервере/)).toBeInTheDocument();
+    expect(screen.queryByText("Будет использована указанная выше директория.")).not.toBeInTheDocument();
+  });
+
+  it("switches to the 'will use the entered directory' caption as soon as the override field is typed into", async () => {
+    const job = editJob();
+    vi.mocked(getBackupJob).mockResolvedValue(job);
+
+    const user = userEvent.setup();
+    renderWithProviders(<JobFormPage mode="edit" />, { route: "/jobs/8", path: "/jobs/:id" });
+
+    await waitFor(() => expect(screen.getByLabelText("Название")).toHaveValue(job.name));
+    expect(screen.getByText(job.remote_directory!)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Директория на FTP-назначении (переопределение)"), "Custom/Path/");
+
+    expect(await screen.findByText("Будет использована указанная выше директория.")).toBeInTheDocument();
+    expect(screen.queryByText(job.remote_directory!)).not.toBeInTheDocument();
+  });
+});
+
+describe("JobFormPage -- remote_directory_override dirty-field PATCH semantics", () => {
+  it("leaving the FTP override field untouched omits the key from the PATCH payload entirely", async () => {
+    const job = makeBackupJob({
+      id: 9,
+      server_id: 7,
+      disk_id: 1,
+      remote_directory: "trz1c8.rcku.net/Nightly_42/DIFF/",
+      remote_directory_override: null,
+    });
+    vi.mocked(getBackupJob).mockResolvedValue(job);
+    vi.mocked(updateBackupJob).mockResolvedValue(job);
+
+    const user = userEvent.setup();
+    renderWithProviders(<JobFormPage mode="edit" />, { route: "/jobs/9", path: "/jobs/:id" });
+
+    await waitFor(() => expect(screen.getByLabelText("Название")).toHaveValue(job.name));
+    await user.type(screen.getByLabelText("Название"), "-renamed");
+
+    await user.click(screen.getByRole("button", { name: "Сохранить изменения" }));
+
+    await waitFor(() => expect(updateBackupJob).toHaveBeenCalled());
+    const [, , patch] = vi.mocked(updateBackupJob).mock.calls[0];
+    expect(patch).not.toHaveProperty("remote_directory_override");
+    expect(patch).toHaveProperty("name", `${job.name}-renamed`);
+  });
+
+  it("typing an override then reverting it back to the original value -- documents the actual dirty-tracking result", async () => {
+    const job = makeBackupJob({
+      id: 10,
+      server_id: 7,
+      disk_id: 1,
+      remote_directory: "trz1c8.rcku.net/Nightly_42/DIFF/",
+      remote_directory_override: "Existing/Override/",
+    });
+    vi.mocked(getBackupJob).mockResolvedValue(job);
+    vi.mocked(updateBackupJob).mockResolvedValue(job);
+
+    const user = userEvent.setup();
+    renderWithProviders(<JobFormPage mode="edit" />, { route: "/jobs/10", path: "/jobs/:id" });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Директория на FTP-назначении (переопределение)")).toHaveValue(
+        job.remote_directory_override,
+      ),
+    );
+
+    const overrideField = screen.getByLabelText("Директория на FTP-назначении (переопределение)");
+    await user.clear(overrideField);
+    await user.type(overrideField, "Existing/Override/");
+    expect(overrideField).toHaveValue(job.remote_directory_override);
+
+    // Also touch an unrelated field so the mutation always has something
+    // dirty to submit, isolating this assertion to remote_directory_override.
+    await user.type(screen.getByLabelText("Название"), "-touched");
+
+    await user.click(screen.getByRole("button", { name: "Сохранить изменения" }));
+
+    await waitFor(() => expect(updateBackupJob).toHaveBeenCalled());
+    const [, , patch] = vi.mocked(updateBackupJob).mock.calls[0];
+    // react-hook-form recomputes `dirtyFields` against `defaultValues` on
+    // every change, so a field that's cleared and retyped back to its
+    // original value is no longer considered dirty -- the key is correctly
+    // omitted, same as if it had never been touched.
+    expect(patch).not.toHaveProperty("remote_directory_override");
   });
 });

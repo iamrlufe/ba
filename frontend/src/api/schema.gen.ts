@@ -1054,6 +1054,8 @@ export interface components {
             copy_window_weekend_unrestricted: boolean;
             /** Local Backup Path Pattern */
             local_backup_path_pattern?: string | null;
+            /** Remote Directory Override */
+            remote_directory_override?: string | null;
             /** Server Id */
             server_id: number;
             /** Disk Id */
@@ -1122,6 +1124,10 @@ export interface components {
             copy_window_weekend_unrestricted: boolean;
             /** Local Backup Path Pattern */
             local_backup_path_pattern?: string | null;
+            /** Remote Directory Override */
+            remote_directory_override?: string | null;
+            /** Remote Directory */
+            remote_directory?: string | null;
             /** Id */
             id: number;
             /** Server Id */
@@ -1195,6 +1201,8 @@ export interface components {
             copy_window_weekend_unrestricted?: boolean | null;
             /** Local Backup Path Pattern */
             local_backup_path_pattern?: string | null;
+            /** Remote Directory Override */
+            remote_directory_override?: string | null;
             /** Is Enabled */
             is_enabled?: boolean | null;
             /** Sql Instance Id */

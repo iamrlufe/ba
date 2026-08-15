@@ -408,6 +408,98 @@ async def test_backup_job_read_does_not_validate_schedule_cron(session):
     assert read.schedule_cron == "not a valid cron"
 
 
+# --------------------------------------------------------------------------
+# BackupJobCreate / BackupJobUpdate: remote_directory_override validation
+# (app.schemas.backup_job._check_remote_directory_override) -- the escape
+# hatch for BackupJob.remote_directory (app/models/backup_job.py). See also
+# tests/test_remote_paths.py for the computed-default resolution logic and
+# its own path-traversal security regression coverage.
+# --------------------------------------------------------------------------
+
+
+def _create_payload(**overrides) -> dict:
+    payload = dict(
+        name="job1",
+        source_path="/src",
+        schedule_cron="0 * * * *",
+        server_id=1,
+        disk_id=1,
+    )
+    payload.update(overrides)
+    return payload
+
+
+def test_backup_job_create_accepts_valid_remote_directory_override():
+    job = BackupJobCreate(**_create_payload(remote_directory_override="custom/path"))
+    assert job.remote_directory_override == "custom/path"
+
+
+def test_backup_job_create_remote_directory_override_defaults_to_none():
+    job = BackupJobCreate(**_create_payload())
+    assert job.remote_directory_override is None
+
+
+def test_backup_job_create_rejects_empty_string_override():
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_create_payload(remote_directory_override=""))
+
+
+@pytest.mark.parametrize(
+    "bad_value", [" custom/path", "custom/path ", " custom/path ", "\tcustom/path"]
+)
+def test_backup_job_create_rejects_leading_or_trailing_whitespace_override(bad_value):
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_create_payload(remote_directory_override=bad_value))
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "..",
+        "a/../b",
+        "a\\..\\b",
+        "../escape",
+        "escape/..",
+        "a/..\\b",
+    ],
+)
+def test_backup_job_create_rejects_dotdot_traversal_override(bad_value):
+    with pytest.raises(ValidationError):
+        BackupJobCreate(**_create_payload(remote_directory_override=bad_value))
+
+
+def test_backup_job_update_accepts_valid_remote_directory_override():
+    update = BackupJobUpdate(remote_directory_override="custom/path")
+    assert update.remote_directory_override == "custom/path"
+
+
+def test_backup_job_update_remote_directory_override_none_is_valid_and_clears():
+    update = BackupJobUpdate(remote_directory_override=None)
+    assert update.remote_directory_override is None
+
+
+def test_backup_job_update_omitted_remote_directory_override_is_valid():
+    update = BackupJobUpdate(name="renamed")
+    assert "remote_directory_override" not in update.model_dump(exclude_unset=True)
+
+
+def test_backup_job_update_rejects_empty_string_override():
+    with pytest.raises(ValidationError):
+        BackupJobUpdate(remote_directory_override="")
+
+
+@pytest.mark.parametrize("bad_value", [" custom/path", "custom/path "])
+def test_backup_job_update_rejects_whitespace_override(bad_value):
+    with pytest.raises(ValidationError):
+        BackupJobUpdate(remote_directory_override=bad_value)
+
+
+@pytest.mark.parametrize("bad_value", ["..", "a/../b", "a\\..\\b"])
+def test_backup_job_update_rejects_dotdot_traversal_override(bad_value):
+    with pytest.raises(ValidationError):
+        BackupJobUpdate(remote_directory_override=bad_value)
+
+
 def test_restore_operation_update_structural_validation_still_works():
     update = RestoreOperationUpdate(status=RestoreStatus.RUNNING)
     assert update.status == RestoreStatus.RUNNING

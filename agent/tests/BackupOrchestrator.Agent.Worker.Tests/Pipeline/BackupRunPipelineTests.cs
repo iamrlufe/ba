@@ -67,6 +67,45 @@ public sealed class BackupRunPipelineTests
     }
 
     // ------------------------------------------------------------------
+    // RemoteDirectory fail-fast: an empty/whitespace-only RemoteDirectory
+    // from the backend must fail the run immediately after local-file
+    // resolution, before the RUNNING transition or connection-config fetch.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task RunClaimedAsync_EmptyRemoteDirectory_CompletesFailedBeforeRunningTransitionOrTransfer()
+    {
+        var h = new Harness();
+        var job = TestData.Job(id: 9, remoteDirectory: "   ");
+        var run = Run(id: 554, backupJobId: job.Id);
+
+        h.JobCache.Setup(c => c.GetById(job.Id)).Returns(job); // enabled, no cancel requested, always-open window
+
+        h.BackendApiClient
+            .Setup(b => b.CompleteJobRunAsync(run.Id, It.IsAny<JobRunCompleteRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(JobRunUpdateOutcome.Success);
+
+        var pipeline = h.BuildPipeline();
+
+        var outcome = await pipeline.RunClaimedAsync(job, run, _ => Task.FromResult<string?>(job.SourcePath), CancellationToken.None);
+
+        Assert.Equal(BackupRunOutcome.Failed, outcome);
+        h.BackendApiClient.Verify(
+            b => b.CompleteJobRunAsync(
+                run.Id,
+                It.Is<JobRunCompleteRequest>(r => r.Status == JobRunStatus.FAILED
+                    && r.ErrorMessage == "Backend did not supply a remote destination directory for this job"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+        h.BackendApiClient.Verify(
+            b => b.PatchJobRunAsync(It.IsAny<int>(), It.IsAny<JobRunPatch>(), It.IsAny<CancellationToken>()), Times.Never);
+        h.BackendApiClient.Verify(b => b.GetConnectionConfigAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        h.TransferClient.Verify(
+            t => t.TransferAsync(It.IsAny<TransferRequest>(), It.IsAny<IProgress<TransferProgress>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // ------------------------------------------------------------------
     // RUNNING-transition-abort logic: PATCH to RUNNING returning
     // AlreadyTerminal (backend 409) must abort BEFORE the connection-config
     // fetch or any transfer attempt, and the run outcome must be Cancelled.
@@ -435,4 +474,81 @@ public sealed class BackupRunPipelineTests
     // operator-cancel check is guaranteed false there and falls through to the
     // existing reclassification logic unchanged. No separate test needed --
     // re-verified passing as part of this run.
+
+    // ------------------------------------------------------------------
+    // Direct regression test for the feature this pass implemented: the
+    // remote directory now comes verbatim (after only NormalizeRemoteDirectory's
+    // mechanical slash-fixup) from BackupJobDto.RemoteDirectory, and the
+    // remote file name is the local file name literally -- no agent-added
+    // timestamp prefix. Asserts the exact TransferRequest handed to
+    // IBackupTransferClient, not just that a transfer was attempted.
+    //
+    // Uses a forward-slash local source path deliberately: the
+    // Windows-backslash-separator behavior of Path.GetFileName is already
+    // exercised platform-conditionally by
+    // RemotePathBuilderTests.BuildRemoteFileName_WindowsStylePath -- this
+    // test's job is to verify the pipeline wires the backend-supplied
+    // directory and the literal file name into TransferRequest correctly,
+    // deterministically on every OS this suite runs on.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task RunClaimedAsync_ValidRemoteDirectoryAndDateLikeSourceFileName_BuildsTransferRequestWithBackendDirectoryAndLiteralFileNameVerbatim()
+    {
+        var h = new Harness();
+
+        // Deliberately missing both leading and trailing slashes, so this
+        // test also exercises NormalizeRemoteDirectory end-to-end through the
+        // pipeline (not just in isolation via RemotePathBuilderTests).
+        const string backendRemoteDirectory = "srv1/tTaraz-diff";
+        const string expectedNormalizedDirectory = "/srv1/tTaraz-diff/";
+
+        // Real-world-shaped file name that already looks like it has a
+        // timestamp baked in -- the whole point of this regression test is
+        // that the agent must NOT prepend a second, agent-generated
+        // timestamp on top of it.
+        const string sourcePath = "/var/backups/TRZ1C8_tTaraz_DIFF_20260808_220000.bak";
+        const string expectedRemoteFileName = "TRZ1C8_tTaraz_DIFF_20260808_220000.bak";
+
+        var job = TestData.Job(id: 20, sourcePath: sourcePath, remoteDirectory: backendRemoteDirectory);
+        var run = Run(id: 570, backupJobId: job.Id);
+
+        h.JobCache.Setup(c => c.GetById(job.Id)).Returns(job);
+
+        h.BackendApiClient
+            .Setup(b => b.PatchJobRunAsync(run.Id, It.IsAny<JobRunPatch>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(JobRunUpdateOutcome.Success);
+        h.BackendApiClient
+            .Setup(b => b.GetConnectionConfigAsync(job.ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConnectionConfigResult.Success(Config()));
+        h.BackendApiClient
+            .Setup(b => b.CompleteJobRunAsync(run.Id, It.IsAny<JobRunCompleteRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(JobRunUpdateOutcome.Success);
+        h.BackendApiClient
+            .Setup(b => b.CreateBackupRecordAsync(It.IsAny<BackupRecordCreateRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        TransferRequest? capturedRequest = null;
+        h.TransferClient
+            .Setup(t => t.TransferAsync(It.IsAny<TransferRequest>(), It.IsAny<IProgress<TransferProgress>>(), It.IsAny<CancellationToken>()))
+            .Callback<TransferRequest, IProgress<TransferProgress>, CancellationToken>((req, _, _) => capturedRequest = req)
+            .ReturnsAsync(new TransferResult
+            {
+                Success = true,
+                Status = JobRunStatus.SUCCESS,
+                RemotePath = expectedNormalizedDirectory + expectedRemoteFileName,
+                FileSizeBytes = 999,
+                Sha256Checksum = "abc123",
+            });
+
+        var pipeline = h.BuildPipeline();
+
+        var outcome = await pipeline.RunClaimedAsync(job, run, _ => Task.FromResult<string?>(sourcePath), CancellationToken.None);
+
+        Assert.Equal(BackupRunOutcome.Success, outcome);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal(expectedNormalizedDirectory, capturedRequest!.RemoteDirectory);
+        Assert.Equal(expectedRemoteFileName, capturedRequest.RemoteFileName);
+        Assert.Equal(sourcePath, capturedRequest.LocalSourcePath);
+    }
 }

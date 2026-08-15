@@ -8,12 +8,14 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.remote_paths import resolve_remote_directory
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.agent_credential_access_log import AgentCredentialAccessLog
 from app.models.enums import (
     AgentCredentialAccessAuthMethod,
     AgentCredentialAccessOutcome,
     AlertType,
+    BackupType,
     JobRunStatus,
     ServerStatus,
 )
@@ -421,6 +423,33 @@ async def test_list_agent_jobs_pagination(admin_client, session):
             assert item["id"] not in seen_ids
             seen_ids.add(item["id"])
     assert seen_ids == all_ids
+
+
+async def test_list_agent_jobs_returns_correctly_resolved_remote_directory(admin_client, session):
+    """This endpoint (GET /api/agents/{server_id}/jobs) is the actual
+    contract the C#/.NET agent consumes -- confirm each job's
+    remote_directory is resolved (default-computed and override cases both
+    covered), not left None (the eager-load of `server` must actually be
+    wired up here, same as list_backup_jobs/get_backup_job)."""
+    server, disk = await _server_with_disk(session)
+    computed_job = build_backup_job(
+        server.id, disk.id, name="Nightly AdventureWorks Diff", backup_type=BackupType.DIFFERENTIAL,
+        is_enabled=True,
+    )
+    override_job = build_backup_job(
+        server.id, disk.id, remote_directory_override="operator/chosen/path", is_enabled=True
+    )
+    session.add_all([computed_job, override_job])
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/agents/{server.id}/jobs")
+    assert resp.status_code == 200
+    by_id = {item["id"]: item for item in resp.json()["items"]}
+
+    assert by_id[computed_job.id]["remote_directory"] == resolve_remote_directory(
+        server.name, "Nightly AdventureWorks Diff", computed_job.id, BackupType.DIFFERENTIAL, None
+    )
+    assert by_id[override_job.id]["remote_directory"] == "operator/chosen/path"
 
 
 # --------------------------------------------------------------------------

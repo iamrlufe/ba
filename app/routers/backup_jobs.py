@@ -3,6 +3,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.auth import get_current_user, require_admin_or_agent_key, require_role
 from app.core.db import async_session_maker, get_db
@@ -74,6 +75,10 @@ async def create_backup_job(payload: BackupJobCreate, session: AsyncSession = De
     session.add(job)
     await session.commit()
     await session.refresh(job)
+    # relationships expire on commit; a plain refresh() doesn't reload them
+    # -- explicitly reload `server` so BackupJobRead.remote_directory
+    # (hybrid_property) resolves a real value below instead of None.
+    await session.refresh(job, attribute_names=["server"])
     return job
 
 
@@ -100,7 +105,10 @@ async def list_backup_jobs(
         filters.append(BackupJob.is_enabled == is_enabled)
 
     total_stmt = select(func.count()).select_from(BackupJob)
-    items_stmt = select(BackupJob)
+    # server eager-loaded so BackupJobRead.remote_directory (hybrid_property
+    # on the ORM model, see app/models/backup_job.py) resolves a real value
+    # instead of None -- server_id is NOT NULL on every BackupJob.
+    items_stmt = select(BackupJob).options(selectinload(BackupJob.server))
     if filters:
         total_stmt = total_stmt.where(*filters)
         items_stmt = items_stmt.where(*filters)
@@ -118,7 +126,7 @@ async def list_backup_jobs(
     "/{backup_job_id}", response_model=BackupJobRead, dependencies=[Depends(get_current_user)]
 )
 async def get_backup_job(backup_job_id: int, session: AsyncSession = Depends(get_db)) -> BackupJob:
-    return await get_or_404(session, BackupJob, backup_job_id)
+    return await get_or_404(session, BackupJob, backup_job_id, options=[selectinload(BackupJob.server)])
 
 
 @router.patch(
@@ -129,7 +137,7 @@ async def get_backup_job(backup_job_id: int, session: AsyncSession = Depends(get
 async def update_backup_job(
     backup_job_id: int, payload: BackupJobUpdate, session: AsyncSession = Depends(get_db)
 ) -> BackupJob:
-    job = await get_or_404(session, BackupJob, backup_job_id)
+    job = await get_or_404(session, BackupJob, backup_job_id, options=[selectinload(BackupJob.server)])
 
     payload_set = payload.model_dump(exclude_unset=True)
 
@@ -238,6 +246,14 @@ async def update_backup_job(
         )
 
     await session.commit()
+    # job was already loaded above with `server` eager-loaded
+    # (selectinload). A plain refresh() (no attribute_names) re-loads any
+    # relationship that was already eagerly loaded on the object using that
+    # same eager strategy -- so `server` comes back populated here too,
+    # without a second explicit attribute_names=["server"] refresh (unlike
+    # create_backup_job, where `job` is freshly constructed and `server`
+    # was never eager-loaded in the first place, so that explicit refresh
+    # is actually needed there).
     await session.refresh(job)
     return job
 

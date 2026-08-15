@@ -272,9 +272,13 @@ async def list_agent_jobs(
     session: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse[BackupJobRead]:
     """Full-snapshot poll of a server's enabled BackupJobs, for the C#/.NET
-    agent to discover what it should be backing up. No destination-path
-    field here -- the agent decides the remote path itself and reports it
-    back via POST /api/backup-records (BackupRecord.remote_path).
+    agent to discover what it should be backing up. Each job's resolved
+    `remote_directory` (see BackupJobRead.remote_directory /
+    BackupJob.remote_directory hybrid_property) tells the agent exactly
+    where on the FTP/SFTP server to place its files -- the agent still
+    reports the actual path used back via POST /api/backup-records
+    (BackupRecord.remote_path), but no longer has to invent the directory
+    structure itself.
     """
     await get_or_404(session, Server, server_id)
 
@@ -286,8 +290,10 @@ async def list_agent_jobs(
         # port/instance_name/use_windows_auth hybrid_properties (see
         # app/models/backup_job.py) actually resolve real values here --
         # this is the only BackupJobRead call site that needs them
-        # (WATCH-mode msdb-priority detection on the .NET agent).
-        .options(selectinload(BackupJob.sql_instance))
+        # (WATCH-mode msdb-priority detection on the .NET agent). server
+        # eager-loaded so BackupJobRead.remote_directory resolves a real
+        # value too (server_id is NOT NULL on every BackupJob).
+        .options(selectinload(BackupJob.sql_instance), selectinload(BackupJob.server))
         .where(*filters)
         .order_by(BackupJob.id.desc())
         .limit(limit)

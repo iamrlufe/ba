@@ -193,6 +193,15 @@ public sealed class BackupRunPipeline
                 return BackupRunOutcome.Failed;
             }
 
+            if (string.IsNullOrWhiteSpace(job.RemoteDirectory))
+            {
+                _logger.LogError(
+                    "Backup job {JobId} has an empty or missing RemoteDirectory from the backend; cannot determine transfer destination -- failing this run without attempting a transfer",
+                    job.Id);
+                await CompleteAsync(run.Id, JobRunStatus.FAILED, "Backend did not supply a remote destination directory for this job");
+                return BackupRunOutcome.Failed;
+            }
+
             var runningPatchOutcome = await PatchAsync(
                 run.Id,
                 new JobRunPatch { Status = JobRunStatus.RUNNING, StartedAt = DateTimeOffset.UtcNow },
@@ -240,9 +249,8 @@ public sealed class BackupRunPipeline
             }
 
             var connectionConfig = connectionConfigResult.Config!;
-            var transferStartUtc = DateTimeOffset.UtcNow;
-            var remoteDirectory = RemotePathBuilder.BuildRemoteDirectory(job.ServerId, job.Id);
-            var remoteFileName = RemotePathBuilder.BuildRemoteFileName(localFilePath, transferStartUtc);
+            var remoteDirectory = RemotePathBuilder.NormalizeRemoteDirectory(job.RemoteDirectory);
+            var remoteFileName = RemotePathBuilder.BuildRemoteFileName(localFilePath);
 
             var transferRequest = new TransferRequest
             {

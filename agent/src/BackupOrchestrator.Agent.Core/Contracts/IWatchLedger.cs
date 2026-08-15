@@ -7,8 +7,10 @@ namespace BackupOrchestrator.Agent.Core.Contracts;
 /// same offline_queue.db file used by IOfflineEventQueue -- see
 /// SqliteWatchLedger). Reconciliation/dedup bookkeeping for WATCH-mode file
 /// discovery and readiness tracking; deliberately NOT derived from
-/// GET /api/backup-records -- the backend's stored remote name is
-/// agent-chosen/timestamp-prefixed, not reversibly mappable to a local file.
+/// GET /api/backup-records -- even though the remote file name is now the
+/// local file name verbatim (no agent-added timestamp), the backend's
+/// records are keyed by backup_job_id + remote path, not local path, and
+/// are not a substitute for this ledger's local-path-keyed dedup state.
 /// </summary>
 public interface IWatchLedger
 {

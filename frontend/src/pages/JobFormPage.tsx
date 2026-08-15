@@ -31,7 +31,7 @@ const DEFAULT_JOB_TIMEZONE: string = import.meta.env.VITE_DEFAULT_JOB_TIMEZONE ?
 
 const jobFormSchema = z
   .object({
-    name: z.string().min(1, "Required").max(255),
+    name: z.string().min(1, "Обязательное поле").max(255),
     database_name: z.string().max(255).optional(),
     source_path: z.string().max(500).optional(),
     backup_type: z.enum(["FULL", "DIFFERENTIAL", "TRANSACTION_LOG", "CUSTOM"]),
@@ -48,8 +48,9 @@ const jobFormSchema = z
     copy_window_end_hour: z.number().int().min(0).max(23).optional(),
     copy_window_weekend_unrestricted: z.boolean(),
     local_backup_path_pattern: z.string().max(500).optional(),
-    server_id: z.string().min(1, "Required"),
-    disk_id: z.string().min(1, "Required"),
+    remote_directory_override: z.string().max(500).optional(),
+    server_id: z.string().min(1, "Обязательное поле"),
+    disk_id: z.string().min(1, "Обязательное поле"),
     sql_instance_id: z.string(),
     is_enabled: z.boolean(),
   })
@@ -58,14 +59,14 @@ const jobFormSchema = z
       if (!data.verification_method) {
         ctx.addIssue({
           code: "custom",
-          message: "Required when a SQL instance is selected",
+          message: "Обязательно при выбранном экземпляре SQL",
           path: ["verification_method"],
         });
       }
       if (!data.database_name) {
         ctx.addIssue({
           code: "custom",
-          message: "Required when a SQL instance is selected (needed for msdb verification queries)",
+          message: "Обязательно при выбранном экземпляре SQL (нужно для запросов верификации msdb)",
           path: ["database_name"],
         });
       }
@@ -74,20 +75,20 @@ const jobFormSchema = z
     // --- trigger_mode cross-field rules ---
     if (data.trigger_mode === "SCHEDULE") {
       if (!data.source_path) {
-        ctx.addIssue({ code: "custom", message: "Required for scheduled jobs", path: ["source_path"] });
+        ctx.addIssue({ code: "custom", message: "Обязательно для задач по расписанию", path: ["source_path"] });
       }
       if (!data.schedule_cron) {
-        ctx.addIssue({ code: "custom", message: "Required for scheduled jobs", path: ["schedule_cron"] });
+        ctx.addIssue({ code: "custom", message: "Обязательно для задач по расписанию", path: ["schedule_cron"] });
       }
     } else if (data.trigger_mode === "WATCH") {
       if (!data.watch_directory) {
-        ctx.addIssue({ code: "custom", message: "Required for watch-mode jobs", path: ["watch_directory"] });
+        ctx.addIssue({ code: "custom", message: "Обязательно для задач в режиме наблюдения", path: ["watch_directory"] });
       }
       if (data.backup_type === "TRANSACTION_LOG" || data.backup_type === "CUSTOM") {
         ctx.addIssue({
           code: "custom",
           message:
-            'Watch-mode jobs don\'t support Transaction Log or Custom backup types (sequential/cumulative backups can\'t safely use "latest file wins" transfer semantics)',
+            "Задачи в режиме наблюдения не поддерживают типы бэкапа Transaction Log или Custom (последовательные/накопительные бэкапы не могут безопасно использовать семантику передачи «последний файл побеждает»)",
           path: ["backup_type"],
         });
       }
@@ -99,13 +100,13 @@ const jobFormSchema = z
     if (startSet !== endSet) {
       ctx.addIssue({
         code: "custom",
-        message: "Set both start and end hour, or leave both empty",
+        message: "Укажите оба часа — начало и конец — или оставьте оба поля пустыми",
         path: [startSet ? "copy_window_end_hour" : "copy_window_start_hour"],
       });
     } else if (startSet && endSet && data.copy_window_start_hour === data.copy_window_end_hour) {
       ctx.addIssue({
         code: "custom",
-        message: "Start and end hour must differ (an equal pair is not a valid window)",
+        message: "Часы начала и конца должны отличаться (равные значения — не окно)",
         path: ["copy_window_end_hour"],
       });
     }
@@ -131,6 +132,7 @@ const defaultValues: JobFormValues = {
   copy_window_end_hour: undefined,
   copy_window_weekend_unrestricted: false,
   local_backup_path_pattern: "",
+  remote_directory_override: "",
   server_id: "",
   disk_id: "",
   sql_instance_id: NONE,
@@ -164,9 +166,20 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
   const triggerMode = form.watch("trigger_mode");
   const watchedScheduleCron = form.watch("schedule_cron");
   const watchedTimezone = form.watch("timezone");
+  const watchedOverride = form.watch("remote_directory_override");
+
+  const effectivePreview = useMemo(() => {
+    if (watchedOverride?.trim()) {
+      return { value: watchedOverride, isLive: true };
+    }
+    if (jobQuery.data?.remote_directory) {
+      return { value: jobQuery.data.remote_directory, isLive: false };
+    }
+    return null;
+  }, [watchedOverride, jobQuery.data?.remote_directory]);
 
   const nextRunPreview = useMemo(() => {
-    if (!watchedScheduleCron) return "Enter a schedule to preview the next run";
+    if (!watchedScheduleCron) return "Введите расписание для предпросмотра следующего запуска";
     try {
       const next = CronExpressionParser.parse(watchedScheduleCron, { tz: watchedTimezone }).next().toDate();
       const local = next.toLocaleString(undefined, {
@@ -185,9 +198,9 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
         minute: "2-digit",
         timeZone: "UTC",
       });
-      return `Next run: ${local} (${watchedTimezone}) = ${utc} UTC`;
+      return `Следующий запуск: ${local} (${watchedTimezone}) = ${utc} UTC`;
     } catch {
-      return "Invalid schedule or timezone";
+      return "Некорректное расписание или часовой пояс";
     }
   }, [watchedScheduleCron, watchedTimezone]);
 
@@ -224,6 +237,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
         copy_window_end_hour: job.copy_window_end_hour ?? undefined,
         copy_window_weekend_unrestricted: job.copy_window_weekend_unrestricted,
         local_backup_path_pattern: job.local_backup_path_pattern ?? "",
+        remote_directory_override: job.remote_directory_override ?? "",
         server_id: String(job.server_id),
         disk_id: String(job.disk_id),
         sql_instance_id: job.sql_instance_id != null ? String(job.sql_instance_id) : NONE,
@@ -261,18 +275,19 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
         copy_window_end_hour: values.copy_window_end_hour ?? null,
         copy_window_weekend_unrestricted: values.copy_window_weekend_unrestricted,
         local_backup_path_pattern: values.local_backup_path_pattern || null,
+        remote_directory_override: values.remote_directory_override || null,
         server_id: Number(values.server_id),
         disk_id: Number(values.disk_id),
         sql_instance_id: values.sql_instance_id === NONE ? null : Number(values.sql_instance_id),
         is_enabled: values.is_enabled,
       }),
     onSuccess: (job) => {
-      toast.success("Backup job created");
+      toast.success("Задача резервного копирования создана");
       void queryClient.invalidateQueries({ queryKey: queryKeys.backupJobs.all() });
       navigate(`/jobs/${job.id}`);
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.detail : "Failed to create backup job");
+      toast.error(error instanceof ApiError ? error.detail : "Не удалось создать задачу резервного копирования");
     },
   });
 
@@ -296,6 +311,9 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
       }
       if (dirty.missed_run_grace_minutes) patch.missed_run_grace_minutes = values.missed_run_grace_minutes;
       if (dirty.local_backup_path_pattern) patch.local_backup_path_pattern = values.local_backup_path_pattern || null;
+      if (dirty.remote_directory_override) {
+        patch.remote_directory_override = values.remote_directory_override || null;
+      }
       if (dirty.is_enabled) patch.is_enabled = values.is_enabled;
 
       // trigger_mode switch requires the full coherent field set for the NEW
@@ -336,13 +354,13 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
       return updateBackupJob(token, jobId, patch);
     },
     onSuccess: (job) => {
-      toast.success("Backup job updated");
+      toast.success("Задача резервного копирования обновлена");
       void queryClient.invalidateQueries({ queryKey: queryKeys.backupJobs.detail(job.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.backupJobs.all() });
       navigate(`/jobs/${job.id}`);
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.detail : "Failed to update backup job");
+      toast.error(error instanceof ApiError ? error.detail : "Не удалось обновить задачу резервного копирования");
     },
   });
 
@@ -355,10 +373,10 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
 
   return (
     <div className="max-w-2xl space-y-6">
-      <h1 className="text-2xl font-semibold">{mode === "create" ? "New backup job" : "Edit backup job"}</h1>
+      <h1 className="text-2xl font-semibold">{mode === "create" ? "Новая задача резервного копирования" : "Редактирование задачи резервного копирования"}</h1>
       <Card>
         <CardHeader>
-          <CardTitle>Job details</CardTitle>
+          <CardTitle>Параметры задачи</CardTitle>
         </CardHeader>
         <CardContent>
           <Form {...form}>
@@ -368,7 +386,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 name="name"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Name</FormLabel>
+                    <FormLabel>Название</FormLabel>
                     <FormControl>
                       <Input {...field} />
                     </FormControl>
@@ -382,7 +400,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 name="server_id"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Server</FormLabel>
+                    <FormLabel>Сервер</FormLabel>
                     <Select
                       value={field.value}
                       onValueChange={(v) => {
@@ -399,7 +417,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                     >
                       <FormControl>
                         <SelectTrigger>
-                          <SelectValue placeholder="Select a server" />
+                          <SelectValue placeholder="Выберите сервер" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
@@ -410,7 +428,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                         ))}
                       </SelectContent>
                     </Select>
-                    {mode === "edit" ? <FormDescription>Server cannot be changed after creation.</FormDescription> : null}
+                    {mode === "edit" ? <FormDescription>Сервер нельзя изменить после создания.</FormDescription> : null}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -421,7 +439,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 name="disk_id"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Disk</FormLabel>
+                    <FormLabel>Диск</FormLabel>
                     <Select
                       value={field.value}
                       onValueChange={(v) => {
@@ -432,7 +450,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                     >
                       <FormControl>
                         <SelectTrigger>
-                          <SelectValue placeholder={serverId ? "Select a disk" : "Select a server first"} />
+                          <SelectValue placeholder={serverId ? "Выберите диск" : "Сначала выберите сервер"} />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
@@ -443,7 +461,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                         ))}
                       </SelectContent>
                     </Select>
-                    {mode === "edit" ? <FormDescription>Disk cannot be changed after creation.</FormDescription> : null}
+                    {mode === "edit" ? <FormDescription>Диск нельзя изменить после создания.</FormDescription> : null}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -454,7 +472,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 name="trigger_mode"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Trigger mode</FormLabel>
+                    <FormLabel>Способ запуска</FormLabel>
                     <Select
                       value={field.value}
                       onValueChange={(v) => {
@@ -474,12 +492,12 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="SCHEDULE">Schedule (cron)</SelectItem>
-                        <SelectItem value="WATCH">Watch directory</SelectItem>
+                        <SelectItem value="SCHEDULE">Расписание (cron)</SelectItem>
+                        <SelectItem value="WATCH">Наблюдение за директорией</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormDescription>
-                      Watch mode is not available for Transaction Log or Custom backup types.
+                      Режим наблюдения недоступен для типов бэкапа Transaction Log или Custom.
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -492,7 +510,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="source_path"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Source path (remote)</FormLabel>
+                      <FormLabel>Путь источника (удалённый)</FormLabel>
                       <FormControl>
                         <Input {...field} />
                       </FormControl>
@@ -506,12 +524,12 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="watch_directory"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Watch directory (remote)</FormLabel>
+                      <FormLabel>Директория наблюдения (удалённая)</FormLabel>
                       <FormControl>
                         <Input {...field} />
                       </FormControl>
                       <FormDescription>
-                        Directory the agent watches for new/changed files, not a single file path.
+                        Директория, за которой агент наблюдает на предмет новых/изменённых файлов, а не путь к одному файлу.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -525,7 +543,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="backup_type"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Backup type</FormLabel>
+                      <FormLabel>Тип бэкапа</FormLabel>
                       <Select value={field.value} onValueChange={(v) => v && field.onChange(v)}>
                         <FormControl>
                           <SelectTrigger>
@@ -551,7 +569,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel className="flex items-center gap-1">
-                          Schedule (cron)
+                          Расписание (cron)
                           <WithTooltip content={nextRunPreview}>
                             <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />
                           </WithTooltip>
@@ -566,13 +584,42 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 ) : null}
               </div>
 
+              <FormField
+                control={form.control}
+                name="remote_directory_override"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Директория на FTP-назначении (переопределение)</FormLabel>
+                    <FormControl>
+                      <Input placeholder="F:\ftp\Taraz\tTaraz\DIFF\" {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Если оставить пустым, директория на FTP будет определена автоматически — по имени сервера, названию задачи и типу бэкапа.
+                    </FormDescription>
+                    {mode === "edit" && effectivePreview ? (
+                      <p className="text-xs text-muted-foreground">
+                        {effectivePreview.isLive ? (
+                          "Будет использована указанная выше директория."
+                        ) : (
+                          <>
+                            Текущая директория на сервере (на момент открытия страницы):{" "}
+                            <span className="font-mono">{effectivePreview.value}</span>
+                          </>
+                        )}
+                      </p>
+                    ) : null}
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
               <div className="grid grid-cols-3 gap-4">
                 <FormField
                   control={form.control}
                   name="timezone"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Timezone</FormLabel>
+                      <FormLabel>Часовой пояс</FormLabel>
                       <FormControl>
                         <Input {...field} />
                       </FormControl>
@@ -585,7 +632,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="retention_days"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Retention (days)</FormLabel>
+                      <FormLabel>Хранение (дней)</FormLabel>
                       <FormControl>
                         <Input
                           type="number"
@@ -602,7 +649,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="retention_min_copies"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Min copies to keep</FormLabel>
+                      <FormLabel>Мин. число копий для хранения</FormLabel>
                       <FormControl>
                         <Input
                           type="number"
@@ -622,9 +669,9 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="expected_max_duration_minutes"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Expected max duration (minutes)</FormLabel>
+                      <FormLabel>Ожидаемая макс. длительность (минут)</FormLabel>
                       <FormControl>
-                        <Input type="number" placeholder="optional" {...field} />
+                        <Input type="number" placeholder="необязательно" {...field} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -635,7 +682,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="missed_run_grace_minutes"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Missed-run grace (minutes)</FormLabel>
+                      <FormLabel>Допуск на пропущенный запуск (минут)</FormLabel>
                       <FormControl>
                         <Input
                           type="number"
@@ -655,13 +702,13 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="copy_window_start_hour"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Copy window start (hour, 0-23)</FormLabel>
+                      <FormLabel>Начало окна копирования (час, 0-23)</FormLabel>
                       <FormControl>
                         <Input
                           type="number"
                           min={0}
                           max={23}
-                          placeholder="optional"
+                          placeholder="необязательно"
                           value={field.value ?? ""}
                           onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
                         />
@@ -675,13 +722,13 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                   name="copy_window_end_hour"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Copy window end (hour, 0-23)</FormLabel>
+                      <FormLabel>Конец окна копирования (час, 0-23)</FormLabel>
                       <FormControl>
                         <Input
                           type="number"
                           min={0}
                           max={23}
-                          placeholder="optional"
+                          placeholder="необязательно"
                           value={field.value ?? ""}
                           onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
                         />
@@ -692,9 +739,9 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 />
               </div>
               <p className="text-[0.8rem] text-muted-foreground">
-                Restricts when the agent may transfer a file, in the job&apos;s timezone. If end is earlier than
-                start, the window wraps past midnight — e.g. 18 → 9 means 18:00 today through 09:00 the next day.
-                Leave both empty for no restriction.
+                Ограничивает, когда агент может передавать файл, в часовом поясе задачи. Если конец раньше начала,
+                окно продолжается за полночь — например, 18 → 9 означает с 18:00 сегодня до 09:00 следующего дня.
+                Оставьте оба поля пустыми, чтобы снять ограничение.
               </p>
 
               <FormField
@@ -703,8 +750,8 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 render={({ field }) => (
                   <FormItem className="flex items-center justify-between rounded-md border p-3">
                     <div>
-                      <FormLabel className="mb-0">Unrestricted on weekends</FormLabel>
-                      <FormDescription>Ignore the copy window entirely on Saturday/Sunday (job&apos;s timezone).</FormDescription>
+                      <FormLabel className="mb-0">Без ограничений по выходным</FormLabel>
+                      <FormDescription>Полностью игнорировать окно копирования по субботам/воскресеньям (в часовом поясе задачи).</FormDescription>
                     </div>
                     <FormControl>
                       <Switch checked={field.value} onCheckedChange={field.onChange} />
@@ -718,11 +765,11 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 name="local_backup_path_pattern"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Local backup path pattern (optional)</FormLabel>
+                    <FormLabel>Шаблон локального пути бэкапа (необязательно)</FormLabel>
                     <FormControl>
                       <Input {...field} />
                     </FormControl>
-                    <FormDescription>Soft consistency check only, independent of verification.</FormDescription>
+                    <FormDescription>Только мягкая проверка согласованности, не связана с верификацией.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -733,7 +780,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 name="sql_instance_id"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>SQL instance (verification)</FormLabel>
+                    <FormLabel>Экземпляр SQL (верификация)</FormLabel>
                     <Select value={field.value} onValueChange={(v) => v && field.onChange(v)}>
                       <FormControl>
                         <SelectTrigger>
@@ -741,7 +788,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value={NONE}>None (no verification)</SelectItem>
+                        <SelectItem value={NONE}>Нет (без верификации)</SelectItem>
                         {sqlInstancesQuery.data?.items.map((si) => (
                           <SelectItem key={si.id} value={String(si.id)}>
                             {si.name}
@@ -761,7 +808,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                     name="database_name"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Database name</FormLabel>
+                        <FormLabel>Имя базы данных</FormLabel>
                         <FormControl>
                           <Input {...field} />
                         </FormControl>
@@ -774,7 +821,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                     name="verification_method"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Verification method</FormLabel>
+                        <FormLabel>Метод верификации</FormLabel>
                         <FormControl>
                           <Input placeholder="RESTORE_VERIFYONLY" {...field} />
                         </FormControl>
@@ -790,7 +837,7 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
                 name="is_enabled"
                 render={({ field }) => (
                   <FormItem className="flex items-center justify-between rounded-md border p-3">
-                    <FormLabel className="mb-0">Enabled</FormLabel>
+                    <FormLabel className="mb-0">Включена</FormLabel>
                     <FormControl>
                       <Switch checked={field.value} onCheckedChange={field.onChange} />
                     </FormControl>
@@ -800,10 +847,10 @@ export function JobFormPage({ mode }: { mode: "create" | "edit" }) {
 
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="outline" onClick={() => navigate(-1)}>
-                  Cancel
+                  Отмена
                 </Button>
                 <Button type="submit" disabled={mutation.isPending}>
-                  {mutation.isPending ? "Saving…" : mode === "create" ? "Create job" : "Save changes"}
+                  {mutation.isPending ? "Сохранение…" : mode === "create" ? "Создать задачу" : "Сохранить изменения"}
                 </Button>
               </div>
             </form>
