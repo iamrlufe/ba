@@ -638,3 +638,280 @@ async def test_watch_event_404_for_missing_job(admin_client):
         "/api/backup-jobs/999999/watch-events", json=_watch_event_payload()
     )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET/LIST must not 500 on a legacy row with an invalid schedule_cron
+# (BackupJobRead does not re-validate schedule_cron -- see
+# tests/test_schemas.py::test_backup_job_read_does_not_validate_schedule_cron
+# for the schema-level version of this same invariant).
+# ---------------------------------------------------------------------------
+
+
+async def test_get_backup_job_with_invalid_cron_in_db_does_not_500(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id, schedule_cron="not a valid cron")
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.get(f"/api/backup-jobs/{job.id}")
+    assert resp.status_code == 200
+    assert resp.json()["schedule_cron"] == "not a valid cron"
+
+
+async def test_list_backup_jobs_with_invalid_cron_in_db_does_not_500(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id, schedule_cron="not a valid cron")
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.get("/api/backup-jobs", params={"server_id": server.id})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert any(item["id"] == job.id and item["schedule_cron"] == "not a valid cron" for item in body["items"])
+
+
+# ---------------------------------------------------------------------------
+# POST /{id}/schedule-errors
+# ---------------------------------------------------------------------------
+
+
+def _schedule_error_payload(**overrides) -> dict:
+    payload = {"active": True, "detail": "Minutes: Unexpected character ' '"}
+    payload.update(overrides)
+    return payload
+
+
+async def test_schedule_error_active_raises_alert(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)  # SCHEDULE mode (default)
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["alert_raised"] is not None
+    assert body["alert_raised"]["alert_type"] == AlertType.JOB_CRON_INVALID.value
+    assert body["alert_raised"]["status"] == AlertStatus.ACTIVE.value
+    assert body["alert_resolved"] is None
+
+    alerts_resp = await admin_client.get("/api/alerts", params={"status": "ACTIVE"})
+    alert_ids = {a["id"] for a in alerts_resp.json()["items"] if a["backup_job_id"] == job.id}
+    assert len(alert_ids) == 1
+
+
+async def test_schedule_error_active_twice_is_idempotent_no_duplicate_alert(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    first = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert first.status_code == 202
+    first_alert_id = first.json()["alert_raised"]["id"]
+
+    second = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert second.status_code == 202
+    assert second.json()["alert_raised"]["id"] == first_alert_id
+
+    alerts_resp = await admin_client.get("/api/alerts", params={"status": "ACTIVE"})
+    matching = [a for a in alerts_resp.json()["items"] if a["backup_job_id"] == job.id]
+    assert len(matching) == 1
+
+
+async def test_schedule_error_inactive_resolves_alert(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    await admin_client.post(f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload())
+
+    resolve_resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload(active=False)
+    )
+    assert resolve_resp.status_code == 202
+    body = resolve_resp.json()
+    assert body["alert_resolved"] is not None
+    assert body["alert_resolved"]["status"] == AlertStatus.RESOLVED.value
+    assert body["alert_raised"] is None
+
+    active_resp = await admin_client.get("/api/alerts", params={"status": "ACTIVE"})
+    matching = [a for a in active_resp.json()["items"] if a["backup_job_id"] == job.id]
+    assert matching == []
+
+
+async def test_schedule_error_inactive_without_active_alert_is_noop(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload(active=False)
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["alert_raised"] is None
+    assert body["alert_resolved"] is None
+
+
+async def test_schedule_error_on_watch_mode_job_is_409(admin_client, session):
+    job = await _watch_job(session)
+
+    resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert resp.status_code == 409
+
+
+async def test_schedule_error_via_agent_key_succeeds(client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    resp = await client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors",
+        json=_schedule_error_payload(),
+        headers={"X-Agent-Key": settings.AGENT_API_KEY},
+    )
+    assert resp.status_code == 202
+    assert resp.json()["alert_raised"] is not None
+
+
+async def test_schedule_error_operator_forbidden(operator_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    resp = await operator_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert resp.status_code == 403
+
+
+async def test_schedule_error_unauthenticated_is_401(client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    resp = await client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert resp.status_code == 401
+
+
+async def test_schedule_error_404_for_missing_job(admin_client):
+    resp = await admin_client.post(
+        "/api/backup-jobs/999999/schedule-errors", json=_schedule_error_payload()
+    )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# PATCH proactive resolve of an active JOB_CRON_INVALID alert
+# ---------------------------------------------------------------------------
+
+
+async def test_patch_schedule_cron_resolves_active_cron_invalid_alert(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    raise_resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert raise_resp.status_code == 202
+    assert raise_resp.json()["alert_raised"] is not None
+
+    patch_resp = await admin_client.patch(
+        f"/api/backup-jobs/{job.id}", json={"schedule_cron": "*/5 * * * *"}
+    )
+    assert patch_resp.status_code == 200
+
+    active_resp = await admin_client.get("/api/alerts", params={"status": "ACTIVE"})
+    matching = [
+        a
+        for a in active_resp.json()["items"]
+        if a["backup_job_id"] == job.id and a["alert_type"] == AlertType.JOB_CRON_INVALID.value
+    ]
+    assert matching == []
+
+    resolved_resp = await admin_client.get("/api/alerts", params={"status": "RESOLVED"})
+    resolved_matching = [
+        a
+        for a in resolved_resp.json()["items"]
+        if a["backup_job_id"] == job.id and a["alert_type"] == AlertType.JOB_CRON_INVALID.value
+    ]
+    assert len(resolved_matching) == 1
+
+
+async def test_patch_trigger_mode_away_from_schedule_resolves_active_cron_invalid_alert(
+    admin_client, session
+):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)  # SCHEDULE mode
+    session.add(job)
+    await session.commit()
+
+    raise_resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert raise_resp.status_code == 202
+    assert raise_resp.json()["alert_raised"] is not None
+
+    patch_resp = await admin_client.patch(
+        f"/api/backup-jobs/{job.id}",
+        json={
+            "trigger_mode": "WATCH",
+            "watch_directory": "/watch/incoming",
+            "schedule_cron": None,
+            "source_path": None,
+        },
+    )
+    assert patch_resp.status_code == 200
+
+    active_resp = await admin_client.get("/api/alerts", params={"status": "ACTIVE"})
+    matching = [
+        a
+        for a in active_resp.json()["items"]
+        if a["backup_job_id"] == job.id and a["alert_type"] == AlertType.JOB_CRON_INVALID.value
+    ]
+    assert matching == []
+
+
+async def test_patch_unrelated_field_does_not_resolve_active_cron_invalid_alert(admin_client, session):
+    server, disk = await _server_and_disk(session)
+    job = build_backup_job(server.id, disk.id)
+    session.add(job)
+    await session.commit()
+
+    raise_resp = await admin_client.post(
+        f"/api/backup-jobs/{job.id}/schedule-errors", json=_schedule_error_payload()
+    )
+    assert raise_resp.status_code == 202
+    alert_id = raise_resp.json()["alert_raised"]["id"]
+
+    patch_resp = await admin_client.patch(
+        f"/api/backup-jobs/{job.id}", json={"name": "renamed-still-broken"}
+    )
+    assert patch_resp.status_code == 200
+
+    active_resp = await admin_client.get("/api/alerts", params={"status": "ACTIVE"})
+    matching = [
+        a
+        for a in active_resp.json()["items"]
+        if a["backup_job_id"] == job.id and a["alert_type"] == AlertType.JOB_CRON_INVALID.value
+    ]
+    assert [a["id"] for a in matching] == [alert_id]

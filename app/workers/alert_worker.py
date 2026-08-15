@@ -87,8 +87,37 @@ async def check_missed_runs(
                 # -- without this, that exception type would escape to the
                 # coarser except Exception in alert_worker_loop and skip the
                 # entire tick (all three checks), not just this one job.
+                #
+                # This used to be a silent `continue` -- now it also raises
+                # JOB_CRON_INVALID (same dedupe key as the .NET agent's own
+                # POST .../schedule-errors report, see
+                # app.routers.backup_jobs.report_schedule_error) so an
+                # invalid cron doesn't just quietly starve JOB_MISSED
+                # detection forever with no visible alert at all.
                 logger.warning("skipping job %s: invalid schedule_cron %r", job.id, job.schedule_cron)
+                await raise_alert_if_absent(
+                    session,
+                    alert_type=AlertType.JOB_CRON_INVALID,
+                    severity=AlertSeverity.CRITICAL,
+                    entity_type="backup_job",
+                    entity_column=Alert.backup_job_id,
+                    entity_id=job.id,
+                    title=f"Backup job '{job.name}' has an invalid schedule",
+                    message=(
+                        f"schedule_cron={job.schedule_cron!r} for backup job '{job.name}' "
+                        f"(id={job.id}) could not be parsed by croniter."
+                    ),
+                )
+                await session.commit()
                 continue
+            else:
+                await resolve_active_alert(
+                    session,
+                    alert_type=AlertType.JOB_CRON_INVALID,
+                    entity_type="backup_job",
+                    entity_column=Alert.backup_job_id,
+                    entity_id=job.id,
+                )
 
             overdue_by = now_naive - expected
             if overdue_by > timedelta(minutes=job.missed_run_grace_minutes):

@@ -19,7 +19,7 @@ from app.models.enums import (
     RestoreStatus,
     TriggerMode,
 )
-from app.schemas.backup_job import BackupJobCreate
+from app.schemas.backup_job import BackupJobCreate, BackupJobRead, BackupJobUpdate
 from app.schemas.backup_record import BackupRecordBase
 from app.schemas.copy_verification import AgentCopyVerificationStatus, CopyVerificationReportRequest
 from app.schemas.disk import DiskBase, DiskCreate
@@ -29,7 +29,7 @@ from app.schemas.restore_operation import RestoreOperationCreate, RestoreOperati
 from app.schemas.restore_operation import is_valid_transition as restore_is_valid_transition
 from app.schemas.server import ServerCreate, ServerRead
 from app.schemas.sql_instance import SqlInstanceCreate, SqlInstanceRead, SqlInstanceUpdate
-from tests.conftest import build_server, build_sql_instance
+from tests.conftest import build_backup_job, build_disk, build_server, build_sql_instance
 
 
 # --------------------------------------------------------------------------
@@ -326,6 +326,86 @@ def test_restore_pending_to_cancelled_is_allowed():
 @pytest.mark.parametrize("target", [RestoreStatus.PENDING, RestoreStatus.RUNNING])
 def test_restore_terminal_to_nonterminal_is_forbidden(terminal, target):
     assert restore_is_valid_transition(terminal, target) is False
+
+
+# --------------------------------------------------------------------------
+# BackupJobCreate / BackupJobUpdate: schedule_cron syntax validation
+# (app.schemas.backup_job._check_cron_syntax, via croniter.is_valid) --
+# regression coverage for the invalid-cron-crashes-the-.NET-agent fix. See
+# AlertType.JOB_CRON_INVALID / POST /{id}/schedule-errors /
+# check_missed_runs for the rest of the fix's surface.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_cron", ["invalid cron", "not a valid cron", "* * * *", "99 * * * *"])
+def test_backup_job_create_rejects_invalid_cron_syntax(bad_cron):
+    with pytest.raises(ValidationError):
+        BackupJobCreate(
+            name="job1",
+            source_path="/src",
+            schedule_cron=bad_cron,
+            server_id=1,
+            disk_id=1,
+        )
+
+
+def test_backup_job_create_accepts_valid_cron_syntax():
+    job = BackupJobCreate(
+        name="job1",
+        source_path="/src",
+        schedule_cron="0 * * * *",
+        server_id=1,
+        disk_id=1,
+    )
+    assert job.schedule_cron == "0 * * * *"
+
+
+def test_backup_job_update_rejects_invalid_cron_syntax():
+    with pytest.raises(ValidationError):
+        BackupJobUpdate(schedule_cron="invalid cron")
+
+
+def test_backup_job_update_accepts_valid_cron_syntax():
+    update = BackupJobUpdate(schedule_cron="0 * * * *")
+    assert update.schedule_cron == "0 * * * *"
+
+
+def test_backup_job_update_without_schedule_cron_key_skips_cron_check():
+    """exclude_unset convention: schedule_cron absent from the patch entirely
+    must not trigger cron validation at all (it's simply not part of this
+    patch) -- only setting schedule_cron to a syntactically invalid string
+    should fail."""
+    update = BackupJobUpdate(name="renamed")
+    assert update.schedule_cron is None
+
+
+async def test_backup_job_read_does_not_validate_schedule_cron(session):
+    """Key regression-protecting invariant: BackupJobBase/BackupJobRead
+    (unlike BackupJobCreate/BackupJobUpdate) must NOT re-validate
+    schedule_cron. A legacy row with an invalid cron already sitting in the
+    DB (inserted directly via the ORM, bypassing the Pydantic schema layer
+    entirely -- the only way such a row could exist post-fix) must still be
+    readable: BackupJobRead.model_validate() must not raise, or every
+    GET/LIST call touching that row would 500 and the agent's polling loop
+    would be starved for that job."""
+    server = build_server()
+    session.add(server)
+    await session.commit()
+    disk = build_disk(server.id)
+    session.add(disk)
+    await session.commit()
+
+    # Bypasses BackupJobCreate/BackupJobUpdate entirely -- the ORM layer
+    # itself has no cron-syntax constraint (see app/models/backup_job.py),
+    # simulating a legacy row from before this fix (or one that became
+    # invalid by some other route).
+    job = build_backup_job(server.id, disk.id, schedule_cron="not a valid cron")
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+
+    read = BackupJobRead.model_validate(job)
+    assert read.schedule_cron == "not a valid cron"
 
 
 def test_restore_operation_update_structural_validation_still_works():

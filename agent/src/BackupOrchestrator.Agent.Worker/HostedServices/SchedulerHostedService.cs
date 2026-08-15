@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using BackupOrchestrator.Agent.Core.Contracts;
 using BackupOrchestrator.Agent.Core.Models;
 using BackupOrchestrator.Agent.Core.Scheduling;
@@ -36,6 +37,22 @@ public sealed class SchedulerHostedService : BackgroundService
     private readonly IBackendApiClient _backendApiClient;
     private readonly ILogger<SchedulerHostedService> _logger;
 
+    /// <summary>
+    /// In-flight guard for schedule-error backend reports, keyed by
+    /// BackupJob.Id -- same ConcurrentDictionary-as-a-set pattern as
+    /// JobScheduler's own _runningJobIds (value unused, only key presence
+    /// matters). Needed because NeedsBackendReport stays true on EVERY tick
+    /// (every 15s) until the report actually succeeds; without this guard, a
+    /// backend call that takes longer than one tick interval would get a
+    /// second, third, etc. concurrent fire-and-forget POST kicked off for the
+    /// same job, increasing the odds of out-of-order completion (see
+    /// JobScheduler.MarkScheduleTransitionReportedToBackend's fingerprint-
+    /// staleness guard) for no benefit -- one in-flight attempt per job is
+    /// always enough; the next tick after it completes will naturally retry
+    /// if it failed.
+    /// </summary>
+    private readonly ConcurrentDictionary<int, byte> _inFlightScheduleReports = new();
+
     public SchedulerHostedService(
         JobScheduler scheduler,
         IJobCache jobCache,
@@ -71,6 +88,46 @@ public sealed class SchedulerHostedService : BackgroundService
             _logger.LogWarning(
                 "Skipping fire for backup job {JobId} ({JobName}): previous run is still in progress",
                 skipped.Id, skipped.Name);
+        }
+
+        foreach (var notification in result.ScheduleErrorNotifications)
+        {
+            if (notification.NeedsLogging)
+            {
+                if (notification.IsBroken)
+                {
+                    _logger.LogError(
+                        "Backup job {JobId} ({JobName}) has an invalid schedule and cannot be evaluated: {ErrorMessage}",
+                        notification.JobId, notification.JobName, notification.ErrorMessage);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "Backup job {JobId} ({JobName}) schedule is valid again; resuming normal cron evaluation",
+                        notification.JobId, notification.JobName);
+                }
+
+                _scheduler.MarkScheduleTransitionLogged(notification.JobId);
+            }
+
+            if (notification.NeedsBackendReport)
+            {
+                // In-flight guard: skip starting a second concurrent report
+                // for the same job while an earlier one (from a previous
+                // tick, since NeedsBackendReport stays true until it
+                // succeeds) is still outstanding -- see
+                // _inFlightScheduleReports' doc comment.
+                if (_inFlightScheduleReports.TryAdd(notification.JobId, 0))
+                {
+                    // Deliberately not awaited -- same fire-and-forget pattern
+                    // as the due-job dispatch loop below, so one slow/
+                    // unavailable backend call doesn't delay the rest of this
+                    // tick. Exceptions are fully handled inside
+                    // ReportScheduleErrorAsync, which also always clears the
+                    // in-flight guard on completion.
+                    _ = ReportScheduleErrorAsync(notification, shutdownToken);
+                }
+            }
         }
 
         foreach (var job in result.DueJobs)
@@ -145,5 +202,46 @@ public sealed class SchedulerHostedService : BackgroundService
         }
 
         await _pipeline.RunClaimedAsync(job, claimedRun, _ => Task.FromResult(job.SourcePath), shutdownToken);
+    }
+
+    /// <summary>
+    /// Reports one schedule-error transition (broken or recovered) to the
+    /// backend. Mirrors WatchHostedService.ReportWatchEventIfChangedAsync's
+    /// failure policy: on BackendUnavailableException, log a Warning and do
+    /// NOT enqueue to the offline queue -- the in-memory throttle state in
+    /// JobScheduler simply keeps NeedsBackendReport true, so the next tick
+    /// retries automatically.
+    /// </summary>
+    private async Task ReportScheduleErrorAsync(ScheduleErrorNotification notification, CancellationToken shutdownToken)
+    {
+        try
+        {
+            try
+            {
+                await _backendApiClient.ReportScheduleErrorAsync(
+                    new ScheduleErrorRequest
+                    {
+                        BackupJobId = notification.JobId,
+                        Active = notification.IsBroken,
+                        Detail = notification.ErrorMessage,
+                    },
+                    shutdownToken);
+
+                _scheduler.MarkScheduleTransitionReportedToBackend(notification.JobId, notification.Fingerprint);
+            }
+            catch (BackendUnavailableException ex)
+            {
+                _logger.LogWarning(
+                    ex, "Could not report schedule-error transition (active={Active}) for backup job {JobId}; will retry next tick",
+                    notification.IsBroken, notification.JobId);
+            }
+        }
+        finally
+        {
+            // Always clears, success or failure -- otherwise a single failed
+            // attempt would permanently wedge this job out of ever being
+            // retried by the in-flight guard above.
+            _inFlightScheduleReports.TryRemove(notification.JobId, out _);
+        }
     }
 }

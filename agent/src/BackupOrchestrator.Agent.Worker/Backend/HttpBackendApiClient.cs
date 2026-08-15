@@ -371,6 +371,29 @@ public sealed class HttpBackendApiClient : IBackendApiClient
         }
     }
 
+    public async Task ReportScheduleErrorAsync(ScheduleErrorRequest request, CancellationToken cancellationToken)
+    {
+        var uri = $"/api/backup-jobs/{request.BackupJobId}/schedule-errors";
+        using var response = await ExecuteAsync(
+            _defaultRetryPipeline,
+            static r => IsRetryableStatus(r.StatusCode),
+            "POST", uri,
+            () => new HttpRequestMessage(HttpMethod.Post, uri) { Content = JsonContent.Create(request, options: AgentJsonOptions.Default) },
+            cancellationToken);
+
+        LogOutcome("POST", uri, response.StatusCode);
+
+        // Mirrors ReportWatchEventAsync's fixed pattern: any non-2xx that
+        // wasn't already retried by the pipeline must become
+        // BackendUnavailableException here, NEVER a raw HttpRequestException
+        // escaping -- callers (SchedulerHostedService) only catch that
+        // specific type and must not crash the hosted service loop.
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new BackendUnavailableException($"POST {uri} returned {(int)response.StatusCode} {response.StatusCode}");
+        }
+    }
+
     /// <summary>
     /// Executes one HTTP call through the given retry pipeline and normalizes
     /// EVERY form of "backend unreachable" to BackendUnavailableException --

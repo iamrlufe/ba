@@ -83,6 +83,17 @@ class AlertType(str, Enum):
     # PENDING JobRun sits undispatched (dispatched_at IS NULL) past its
     # BackupJob.pending_to_running_grace_minutes -- see JobRunStatus.STUCK.
     JOB_STUCK_PENDING = "JOB_STUCK_PENDING"
+    # Raised either by the .NET agent (POST
+    # /api/backup-jobs/{id}/schedule-errors, when its Cronos parser rejects
+    # BackupJob.schedule_cron) or by
+    # app.workers.alert_worker.check_missed_runs (when croniter itself
+    # fails to parse it server-side) -- same dedupe key
+    # (entity_type="backup_job", Alert.backup_job_id) either way, so
+    # whichever side notices first raises it and either side (or a
+    # schedule_cron-changing PATCH) can resolve it. Always CRITICAL: the
+    # job will never fire at all until this is fixed, worse than merely
+    # being overdue (JOB_MISSED).
+    JOB_CRON_INVALID = "JOB_CRON_INVALID"
 
 
 class AlertSeverity(str, Enum):

@@ -72,6 +72,16 @@ public interface IBackendApiClient
     /// FileLockCheckIntervalSeconds regardless) retry.
     /// </summary>
     Task ReportWatchEventAsync(WatchEventRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /api/backup-jobs/{backup_job_id}/schedule-errors, X-Agent-Key
+    /// auth, fire-and-forget style (response body ignored). Throws
+    /// BackendUnavailableException once the bounded default retry pipeline is
+    /// exhausted -- callers must NOT enqueue to the offline queue on failure;
+    /// log a Warning and let the next scheduler tick's in-memory throttle
+    /// state (JobScheduler) retry the report on its own.
+    /// </summary>
+    Task ReportScheduleErrorAsync(ScheduleErrorRequest request, CancellationToken cancellationToken);
 }
 
 public sealed class JobsPage

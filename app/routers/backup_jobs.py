@@ -27,7 +27,13 @@ from app.models.verification_run import VerificationRun
 from app.routers._alerts import raise_alert_if_absent, resolve_active_alert
 from app.routers._deps import get_or_404
 from app.schemas.alert import AlertRead
-from app.schemas.backup_job import BackupJobCreate, BackupJobRead, BackupJobUpdate
+from app.schemas.backup_job import (
+    BackupJobCreate,
+    BackupJobRead,
+    BackupJobUpdate,
+    ScheduleErrorRequest,
+    ScheduleErrorResponse,
+)
 from app.schemas.common import PaginatedResponse
 from app.schemas.verification_run import VerificationRunRead
 from app.schemas.watch_event import WatchEventRequest, WatchEventResponse
@@ -207,6 +213,28 @@ async def update_backup_job(
                 "backups cannot safely use latest-file-wins transfer semantics; use SCHEDULE "
                 "mode instead"
             ),
+        )
+
+    # Proactively resolve any active JOB_CRON_INVALID alert (raised either
+    # by the agent's schedule-errors endpoint or by
+    # alert_worker.check_missed_runs) as soon as an admin has plausibly
+    # fixed the problem -- either by editing schedule_cron directly, or by
+    # moving the job off SCHEDULE entirely -- rather than waiting for the
+    # agent's next poll/the worker's next tick to notice. Deliberately NOT
+    # gated on whether the new schedule_cron actually parses cleanly (this
+    # PATCH's own _cron_syntax_valid validator already rejects a
+    # croniter-invalid string before we get here; a Cronos-specific parse
+    # failure the agent hits later will simply re-raise via the same
+    # dedupe key).
+    if "schedule_cron" in payload_set or (
+        "trigger_mode" in payload_set and job.trigger_mode != TriggerMode.SCHEDULE
+    ):
+        await resolve_active_alert(
+            session,
+            alert_type=AlertType.JOB_CRON_INVALID,
+            entity_type="backup_job",
+            entity_column=Alert.backup_job_id,
+            entity_id=backup_job_id,
         )
 
     await session.commit()
@@ -391,6 +419,62 @@ async def report_watch_event(
 
     await session.commit()
     return WatchEventResponse(
+        alert_raised=AlertRead.model_validate(alert_raised) if alert_raised else None,
+        alert_resolved=AlertRead.model_validate(alert_resolved) if alert_resolved else None,
+    )
+
+
+@router.post(
+    "/{backup_job_id}/schedule-errors",
+    response_model=ScheduleErrorResponse,
+    status_code=202,
+    dependencies=[Depends(require_admin_or_agent_key)],
+)
+async def report_schedule_error(
+    backup_job_id: int, payload: ScheduleErrorRequest, session: AsyncSession = Depends(get_db)
+) -> ScheduleErrorResponse:
+    """Reported by the .NET agent when its Cronos cron parser can't parse a
+    job's schedule_cron (the crash this endpoint exists to prevent -- see
+    CLAUDE.md). Mirrors report_watch_event's shape exactly, but for
+    SCHEDULE-mode jobs instead of WATCH-mode ones -- see AlertType.JOB_CRON_INVALID.
+
+    Same dedupe key (entity_type="backup_job", Alert.backup_job_id) as
+    app.workers.alert_worker.check_missed_runs's own JOB_CRON_INVALID
+    raise/resolve for the same job -- whichever side notices first wins,
+    the partial unique dedupe index in raise_alert_if_absent handles the
+    rest.
+    """
+    job = await get_or_404(session, BackupJob, backup_job_id)
+    if job.trigger_mode != TriggerMode.SCHEDULE:
+        raise HTTPException(
+            status_code=409, detail="schedule-errors can only be reported for SCHEDULE-mode jobs"
+        )
+
+    alert_raised = None
+    alert_resolved = None
+    if payload.active:
+        alert_raised = await raise_alert_if_absent(
+            session,
+            alert_type=AlertType.JOB_CRON_INVALID,
+            severity=AlertSeverity.CRITICAL,
+            entity_type="backup_job",
+            entity_column=Alert.backup_job_id,
+            entity_id=backup_job_id,
+            title=f"Backup job '{job.name}' has an invalid schedule",
+            message=payload.detail
+            or f"Agent could not parse schedule_cron for backup job '{job.name}' (id={backup_job_id}).",
+        )
+    else:
+        alert_resolved = await resolve_active_alert(
+            session,
+            alert_type=AlertType.JOB_CRON_INVALID,
+            entity_type="backup_job",
+            entity_column=Alert.backup_job_id,
+            entity_id=backup_job_id,
+        )
+
+    await session.commit()
+    return ScheduleErrorResponse(
         alert_raised=AlertRead.model_validate(alert_raised) if alert_raised else None,
         alert_resolved=AlertRead.model_validate(alert_resolved) if alert_resolved else None,
     )

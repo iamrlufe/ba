@@ -1,6 +1,8 @@
+from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import BackupType, TriggerMode
+from app.schemas.alert import AlertRead
 from app.schemas.common import UtcDatetime
 
 
@@ -88,6 +90,11 @@ class BackupJobCreate(BackupJobBase):
         return self
 
     @model_validator(mode="after")
+    def _cron_syntax_valid(self) -> "BackupJobCreate":
+        _check_cron_syntax(self.schedule_cron)
+        return self
+
+    @model_validator(mode="after")
     def _watch_backup_type_rejected(self) -> "BackupJobCreate":
         if self.trigger_mode == TriggerMode.WATCH and self.backup_type in (
             BackupType.TRANSACTION_LOG,
@@ -100,6 +107,31 @@ class BackupJobCreate(BackupJobBase):
                 "mode instead"
             )
         return self
+
+
+def _check_cron_syntax(schedule_cron: str | None) -> None:
+    """Reject a `schedule_cron` that croniter itself can't parse.
+
+    This is a NECESSARY but NOT SUFFICIENT check: it only guards against
+    the case that crashed the .NET agent (an unparseable expression that
+    croniter also rejects). croniter and the agent's Cronos parser are
+    different cron dialects with different accepted syntax -- passing this
+    check does NOT guarantee Cronos will accept the same string. Callers
+    populating schedule_cron should stick to the plain 5-field
+    minute/hour/day-of-month/month/day-of-week numeric-and-`*`/`,`/`-`/`/`
+    syntax and avoid named day-of-week/month abbreviations (MON, JAN, ...),
+    the `L`/`W`/`#`/`?` special characters, and day-of-week=7 (Cronos and
+    croniter disagree on some of these).
+    """
+    if schedule_cron is None:
+        return
+    if not croniter.is_valid(schedule_cron):
+        raise ValueError(
+            f"schedule_cron={schedule_cron!r} is not a valid cron expression (per croniter). "
+            "Note: passing this check does not guarantee the .NET agent's Cronos parser will "
+            "also accept it -- they are different cron dialects. Avoid named day-of-week/month "
+            "abbreviations, the L/W/#/? special characters, and day-of-week=7."
+        )
 
 
 def _check_copy_window(start_hour: int | None, end_hour: int | None) -> None:
@@ -161,6 +193,16 @@ class BackupJobUpdate(BaseModel):
         _check_copy_window(self.copy_window_start_hour, self.copy_window_end_hour)
         return self
 
+    @model_validator(mode="after")
+    def _cron_syntax_valid(self) -> "BackupJobUpdate":
+        # Self-contained (doesn't need current DB state), same as
+        # _copy_window_valid above -- if schedule_cron isn't in this patch
+        # at all, self.schedule_cron is None and _check_cron_syntax is a
+        # no-op, matching the exclude_unset convention documented on
+        # sql_instance_id above.
+        _check_cron_syntax(self.schedule_cron)
+        return self
+
 
 class BackupJobRead(BackupJobBase):
     id: int
@@ -194,3 +236,23 @@ class BackupJobRead(BackupJobBase):
     # it needs to react to, without a second round-trip.
     pending_manual_run_id: int | None = None
     cancel_requested_run_id: int | None = None
+
+
+class ScheduleErrorRequest(BaseModel):
+    """Reported by the .NET agent (or raised server-side, see
+    app.workers.alert_worker.check_missed_runs) when its Cronos cron parser
+    can't parse a SCHEDULE-mode job's schedule_cron -- see
+    app.routers.backup_jobs.report_schedule_error. Mirrors
+    WatchEventRequest's active/detail shape (app/schemas/watch_event.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    active: bool
+    detail: str | None = Field(default=None, max_length=2000)
+
+
+class ScheduleErrorResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    alert_raised: AlertRead | None = None
+    alert_resolved: AlertRead | None = None

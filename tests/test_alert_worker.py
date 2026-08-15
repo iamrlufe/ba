@@ -26,6 +26,7 @@ from app.main import app as fastapi_app
 from app.models.alert import Alert
 from app.models.backup_job import BackupJob
 from app.models.enums import (
+    AlertSeverity,
     AlertStatus,
     AlertType,
     JobRunStatus,
@@ -35,6 +36,7 @@ from app.models.enums import (
 )
 from app.models.job_run import JobRun
 from app.models.server import Server
+from app.routers._alerts import raise_alert_if_absent
 from app.workers.alert_worker import (
     check_agent_offline,
     check_job_timeouts,
@@ -194,6 +196,13 @@ async def test_check_missed_runs_disabled_job_never_evaluated(session, session_m
 
 
 async def test_check_missed_runs_malformed_cron_is_skipped_without_raising(session, session_maker):
+    """The job itself must not crash/raise JOB_MISSED for a cron croniter
+    can't parse -- `check_missed_runs`'s own return value (which only
+    counts new JOB_MISSED alerts) stays 0 and no JOB_MISSED alert is
+    raised. See test_check_missed_runs_malformed_cron_raises_job_cron_invalid_alert
+    below for the companion behavior this used to lack entirely: a
+    JOB_CRON_INVALID alert IS now raised instead of the invalid cron being
+    silently swallowed."""
     await _enabled_job(
         session,
         schedule_cron="not a valid cron",
@@ -206,6 +215,127 @@ async def test_check_missed_runs_malformed_cron_is_skipped_without_raising(sessi
     count = await check_missed_runs(session_maker, now=NOW)
     assert count == 0
     assert await _active_alert_count(session_maker, AlertType.JOB_MISSED) == 0
+
+
+async def test_check_missed_runs_malformed_cron_raises_job_cron_invalid_alert(session, session_maker):
+    job = await _enabled_job(
+        session,
+        schedule_cron="not a valid cron",
+        timezone="UTC",
+        missed_run_grace_minutes=15,
+        last_run_at=NOW - timedelta(hours=3),
+    )
+
+    await check_missed_runs(session_maker, now=NOW)
+
+    assert await _active_alert_count(session_maker, AlertType.JOB_CRON_INVALID) == 1
+    async with session_maker() as s:
+        alert = (
+            await s.execute(
+                select(Alert).where(
+                    Alert.alert_type == AlertType.JOB_CRON_INVALID, Alert.backup_job_id == job.id
+                )
+            )
+        ).scalar_one()
+    assert alert.status == AlertStatus.ACTIVE
+    assert alert.severity == AlertSeverity.CRITICAL
+
+
+async def test_check_missed_runs_malformed_cron_dedup_second_tick_no_duplicate(session, session_maker):
+    await _enabled_job(
+        session,
+        schedule_cron="not a valid cron",
+        timezone="UTC",
+        missed_run_grace_minutes=15,
+        last_run_at=NOW - timedelta(hours=3),
+    )
+
+    await check_missed_runs(session_maker, now=NOW)
+    assert await _active_alert_count(session_maker, AlertType.JOB_CRON_INVALID) == 1
+
+    # Still invalid at a later tick -- must not raise a second, distinct alert.
+    await check_missed_runs(session_maker, now=NOW + timedelta(minutes=5))
+    assert await _active_alert_count(session_maker, AlertType.JOB_CRON_INVALID) == 1
+
+
+async def test_check_missed_runs_cron_fixed_resolves_job_cron_invalid_alert(session, session_maker):
+    job = await _enabled_job(
+        session,
+        schedule_cron="not a valid cron",
+        timezone="UTC",
+        missed_run_grace_minutes=15,
+        last_run_at=NOW - timedelta(hours=3),
+    )
+
+    await check_missed_runs(session_maker, now=NOW)
+    assert await _active_alert_count(session_maker, AlertType.JOB_CRON_INVALID) == 1
+
+    async with session_maker() as s:
+        db_job = await s.get(BackupJob, job.id)
+        # A schedule that fires every minute and isn't overdue at NOW
+        # (last_run_at just reset to NOW) -- avoids also tripping
+        # JOB_MISSED on the same tick, keeping this test focused on the
+        # JOB_CRON_INVALID resolve path.
+        db_job.schedule_cron = "* * * * *"
+        db_job.last_run_at = NOW
+        await s.commit()
+
+    await check_missed_runs(session_maker, now=NOW)
+
+    assert await _active_alert_count(session_maker, AlertType.JOB_CRON_INVALID) == 0
+    assert await _active_alert_count(session_maker, AlertType.JOB_CRON_INVALID, AlertStatus.RESOLVED) == 1
+
+
+async def test_check_missed_runs_job_cron_invalid_concurrent_dedupe_race(session, session_maker, monkeypatch):
+    """Same shape as test_check_agent_offline_race_concurrent_heartbeat_not_clobbered
+    above, adapted for an INSERT-side dedupe race instead of a CAS-UPDATE
+    race: a concurrent caller (e.g. the .NET agent's own POST
+    .../schedule-errors report for the same job, see
+    app.routers.backup_jobs.report_schedule_error) raises the same
+    JOB_CRON_INVALID alert in between check_missed_runs's dedupe SELECT and
+    its own INSERT. The partial unique dedupe index
+    (uq_alerts_active_dedupe) must reject the loser's INSERT with a real
+    IntegrityError, which raise_alert_if_absent must catch locally (not
+    propagate/crash the tick) -- leaving exactly one ACTIVE JOB_CRON_INVALID
+    alert for the job, not two.
+    """
+    job = await _enabled_job(
+        session,
+        schedule_cron="not a valid cron",
+        timezone="UTC",
+        missed_run_grace_minutes=15,
+        last_run_at=NOW - timedelta(hours=3),
+    )
+    job_id = job.id
+
+    real_flush = RealAsyncSession.flush
+    state = {"triggered": False}
+
+    async def _flush_with_injected_race(self, *args, **kwargs):
+        if not state["triggered"]:
+            state["triggered"] = True
+            async with session_maker() as other:
+                await raise_alert_if_absent(
+                    other,
+                    alert_type=AlertType.JOB_CRON_INVALID,
+                    severity=AlertSeverity.CRITICAL,
+                    entity_type="backup_job",
+                    entity_column=Alert.backup_job_id,
+                    entity_id=job_id,
+                    title="concurrent winner",
+                    message="concurrent winner raised this first",
+                )
+                await other.commit()
+        return await real_flush(self, *args, **kwargs)
+
+    monkeypatch.setattr(RealAsyncSession, "flush", _flush_with_injected_race)
+
+    # Must not raise -- the loser's IntegrityError is caught inside
+    # raise_alert_if_absent's local try/except, not propagated.
+    await check_missed_runs(session_maker, now=NOW)
+
+    assert state["triggered"] is True
+    assert await _active_alert_count(session_maker, AlertType.JOB_CRON_INVALID) == 1
 
 
 async def test_check_missed_runs_honors_job_timezone_not_utc(session, session_maker):

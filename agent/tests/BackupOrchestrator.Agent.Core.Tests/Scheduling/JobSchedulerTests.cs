@@ -1,3 +1,5 @@
+using Cronos;
+using BackupOrchestrator.Agent.Core.Models;
 using BackupOrchestrator.Agent.Core.Scheduling;
 using BackupOrchestrator.Agent.Core.Tests.Support;
 
@@ -323,5 +325,224 @@ public sealed class JobSchedulerTests
 
         scheduler.MarkFinished(jobId);
         Assert.False(scheduler.IsRunning(jobId));
+    }
+
+    // -----------------------------------------------------------------
+    // Regression coverage for the "invalid cron in one BackupJob crashes the
+    // whole agent process" bug fix. These are the tests reviewer flagged as
+    // the load-bearing ones -- without EnqueueThrow actually driving a real
+    // exception through Tick()'s try/catch, nothing here proves the crash is
+    // actually fixed.
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public void Tick_OneJobHasInvalidCron_DoesNotThrow_AndHealthyJobsStillProcessedSameTick()
+    {
+        // THE regression test for the bug this whole fix exists for: a
+        // CronFormatException thrown while evaluating one BackupJob must not
+        // escape Tick() (which would crash the whole BackgroundService host,
+        // since BackgroundServiceExceptionBehavior.StopHost is left in place
+        // for everything else) and must not prevent OTHER, healthy jobs in
+        // the very same Tick() call from being correctly evaluated as due.
+        var clock = new TestClock(T);
+        var fake = new FakeCronNextRunCalculator();
+        const string brokenCron = "not a cron expression";
+        fake.EnqueueThrow(brokenCron, new CronFormatException("Invalid cron expression."));
+        fake.Enqueue(Cron, T); // healthy job: due now
+        fake.Enqueue(Cron, T + TimeSpan.FromHours(1)); // healthy job: bookkeeping advance
+        var scheduler = new JobScheduler(fake, clock);
+        var brokenJob = TestData.Job(id: 1, scheduleCron: brokenCron);
+        var healthyJob = TestData.Job(id: 2, scheduleCron: Cron);
+
+        SchedulerTickResult? result = null;
+        var exception = Record.Exception(() => result = scheduler.Tick([brokenJob, healthyJob]));
+
+        Assert.Null(exception);
+        Assert.NotNull(result);
+        Assert.Single(result!.DueJobs);
+        Assert.Equal(healthyJob.Id, result.DueJobs[0].Id);
+        Assert.Empty(result.SkippedOverlapJobs);
+
+        var notification = Assert.Single(result.ScheduleErrorNotifications);
+        Assert.Equal(brokenJob.Id, notification.JobId);
+        Assert.True(notification.IsBroken);
+        Assert.True(notification.NeedsLogging);
+        Assert.True(notification.NeedsBackendReport);
+        Assert.Equal("Invalid cron expression.", notification.ErrorMessage);
+    }
+
+    [Fact]
+    public void Tick_PersistentlyBrokenJob_NeedsLoggingStaysTrueUntilAcked_AndNeverDuplicatesAcrossTicks()
+    {
+        var clock = new TestClock(T);
+        var fake = new FakeCronNextRunCalculator();
+        const string brokenCron = "still not a cron expression";
+        // Broken on every one of the 3 ticks below (nothing ever gets
+        // cached in _nextFireUtcByJobId on a throw, so GetOrComputeNextFire
+        // re-consults the calculator every single Tick()).
+        fake.EnqueueThrow(brokenCron, new CronFormatException("bad #1"));
+        fake.EnqueueThrow(brokenCron, new CronFormatException("bad #2"));
+        fake.EnqueueThrow(brokenCron, new CronFormatException("bad #3"));
+        var scheduler = new JobScheduler(fake, clock);
+        var job = TestData.Job(id: 1, scheduleCron: brokenCron);
+
+        var tick1 = scheduler.Tick([job]);
+        var notification1 = Assert.Single(tick1.ScheduleErrorNotifications);
+        Assert.True(notification1.NeedsLogging);
+
+        // No Mark* ack yet -- must still say NeedsLogging=true, and there
+        // must still be exactly ONE notification for this job (not a growing
+        // pile of duplicates for repeated failures of the same fingerprint).
+        var tick2 = scheduler.Tick([job]);
+        var notification2 = Assert.Single(tick2.ScheduleErrorNotifications);
+        Assert.Equal(job.Id, notification2.JobId);
+        Assert.True(notification2.NeedsLogging);
+
+        scheduler.MarkScheduleTransitionLogged(job.Id);
+
+        var tick3 = scheduler.Tick([job]);
+        var notification3 = Assert.Single(tick3.ScheduleErrorNotifications);
+        Assert.False(notification3.NeedsLogging);
+        // Backend report was never acked in this test -- stays true throughout.
+        Assert.True(notification3.NeedsBackendReport);
+    }
+
+    [Fact]
+    public void Tick_JobRecoversAfterBeingBroken_ProducesExactlyOneRecoveryNotification()
+    {
+        var clock = new TestClock(T);
+        var fake = new FakeCronNextRunCalculator();
+        const string cron = "recoverable-cron";
+        fake.EnqueueThrow(cron, new CronFormatException("initially broken"));
+        var scheduler = new JobScheduler(fake, clock);
+        var job = TestData.Job(id: 1, scheduleCron: cron);
+
+        var tick1 = scheduler.Tick([job]);
+        var brokenNotification = Assert.Single(tick1.ScheduleErrorNotifications);
+        Assert.True(brokenNotification.IsBroken);
+
+        // Fully ack the broken state (both log + backend report) so the
+        // recovery notification below is unambiguously a NEW transition, not
+        // just leftover unacked bookkeeping from the failure.
+        scheduler.MarkScheduleTransitionLogged(job.Id);
+        scheduler.MarkScheduleTransitionReportedToBackend(job.Id, brokenNotification.Fingerprint);
+
+        // Cron is fixed now -- resolves to a future time (not due), we only
+        // care about the recovery transition itself, not whether it fires.
+        fake.Enqueue(cron, T + TimeSpan.FromHours(1));
+
+        var tick2 = scheduler.Tick([job]);
+
+        var recoveryNotification = Assert.Single(tick2.ScheduleErrorNotifications);
+        Assert.Equal(job.Id, recoveryNotification.JobId);
+        Assert.False(recoveryNotification.IsBroken);
+        Assert.Equal(string.Empty, recoveryNotification.Fingerprint);
+        Assert.True(recoveryNotification.NeedsLogging);
+        Assert.True(recoveryNotification.NeedsBackendReport);
+    }
+
+    [Theory]
+    [InlineData("absent")]
+    [InlineData("disabled")]
+    [InlineData("switchedToWatch")]
+    public void Tick_BrokenJobBecomesIneligible_ReconciliationPassProducesRecoveryNotification(string scenario)
+    {
+        var clock = new TestClock(T);
+        var fake = new FakeCronNextRunCalculator();
+        const string cron = "ineligible-cron";
+        fake.EnqueueThrow(cron, new CronFormatException("broken before disappearing"));
+        var scheduler = new JobScheduler(fake, clock);
+        var job = TestData.Job(id: 1, scheduleCron: cron);
+
+        var tick1 = scheduler.Tick([job]);
+        var brokenNotification = Assert.Single(tick1.ScheduleErrorNotifications);
+        Assert.True(brokenNotification.IsBroken);
+
+        // Fully ack so the reconciliation-driven recovery notification below
+        // is unambiguous (same reasoning as the recovery test above).
+        scheduler.MarkScheduleTransitionLogged(job.Id);
+        scheduler.MarkScheduleTransitionReportedToBackend(job.Id, brokenNotification.Fingerprint);
+
+        IReadOnlyList<BackupJobDto> nextSnapshot = scenario switch
+        {
+            "absent" => [],
+            "disabled" => [TestData.Job(id: 1, scheduleCron: cron, isEnabled: false)],
+            "switchedToWatch" => [TestData.Job(id: 1, triggerMode: "WATCH", scheduleCron: null)],
+            _ => throw new InvalidOperationException(),
+        };
+
+        var tick2 = scheduler.Tick(nextSnapshot);
+
+        var recoveryNotification = Assert.Single(tick2.ScheduleErrorNotifications);
+        Assert.Equal(job.Id, recoveryNotification.JobId);
+        Assert.False(recoveryNotification.IsBroken);
+        Assert.Equal(string.Empty, recoveryNotification.Fingerprint);
+        Assert.True(recoveryNotification.NeedsLogging);
+        Assert.True(recoveryNotification.NeedsBackendReport);
+    }
+
+    [Fact]
+    public void MarkScheduleTransitionReportedToBackend_StaleFingerprint_DoesNotAckCurrentState()
+    {
+        // Direct regression coverage for the race the reviewer flagged: a
+        // fire-and-forget backend-report continuation from an OLDER Tick
+        // completing after state has moved on must not be able to mark the
+        // CURRENT (different) state as acked.
+        var clock = new TestClock(T);
+        var fake = new FakeCronNextRunCalculator();
+        const string cron = "guarded-cron";
+        fake.EnqueueThrow(cron, new CronFormatException("broken #1"));
+        var scheduler = new JobScheduler(fake, clock);
+        var job = TestData.Job(id: 1, scheduleCron: cron);
+
+        var tick1 = scheduler.Tick([job]);
+        var notification1 = Assert.Single(tick1.ScheduleErrorNotifications);
+        var currentFingerprint = notification1.Fingerprint;
+        Assert.True(notification1.NeedsBackendReport);
+
+        scheduler.MarkScheduleTransitionLogged(job.Id);
+
+        // Stale/incorrect fingerprint -- must be a no-op.
+        scheduler.MarkScheduleTransitionReportedToBackend(job.Id, "stale|fingerprint-does-not-match");
+
+        fake.EnqueueThrow(cron, new CronFormatException("broken #2 (still same fingerprint)"));
+        var tick2 = scheduler.Tick([job]);
+        var notification2 = Assert.Single(tick2.ScheduleErrorNotifications);
+        // Proves the stale ack above had NO effect: still needs a backend report.
+        Assert.True(notification2.NeedsBackendReport);
+        Assert.Equal(currentFingerprint, notification2.Fingerprint);
+
+        // Now ack with the CURRENT/correct fingerprint.
+        scheduler.MarkScheduleTransitionReportedToBackend(job.Id, currentFingerprint);
+
+        fake.EnqueueThrow(cron, new CronFormatException("broken #3 (still same fingerprint)"));
+        var tick3 = scheduler.Tick([job]);
+        // Fully acked (Logged + BackendAcked) with an unchanged fingerprint
+        // -> filtered out of ScheduleErrorNotifications entirely.
+        Assert.Empty(tick3.ScheduleErrorNotifications);
+    }
+
+    [Theory]
+    [InlineData(true)] // TimeZoneNotFoundException
+    [InlineData(false)] // InvalidTimeZoneException
+    public void Tick_InvalidTimezoneExceptions_AreCaughtIdenticallyToCronFormatException(bool useTimeZoneNotFound)
+    {
+        var clock = new TestClock(T);
+        var fake = new FakeCronNextRunCalculator();
+        const string cron = "tz-cron";
+        Exception thrown = useTimeZoneNotFound
+            ? new TimeZoneNotFoundException("No such time zone.")
+            : new InvalidTimeZoneException("Corrupt time zone data.");
+        fake.EnqueueThrow(cron, thrown);
+        var scheduler = new JobScheduler(fake, clock);
+        var job = TestData.Job(id: 1, scheduleCron: cron, timezone: "Not/ARealZone");
+
+        SchedulerTickResult? result = null;
+        var exception = Record.Exception(() => result = scheduler.Tick([job]));
+
+        Assert.Null(exception);
+        var notification = Assert.Single(result!.ScheduleErrorNotifications);
+        Assert.True(notification.IsBroken);
+        Assert.Equal(thrown.Message, notification.ErrorMessage);
     }
 }
